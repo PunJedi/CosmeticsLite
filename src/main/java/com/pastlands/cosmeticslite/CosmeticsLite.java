@@ -1,0 +1,296 @@
+// src/main/java/com/pastlands/cosmeticslite/CosmeticsLite.java
+package com.pastlands.cosmeticslite;
+
+import com.mojang.logging.LogUtils;
+import com.pastlands.cosmeticslite.entity.PetEntities;
+import com.pastlands.cosmeticslite.gadget.GadgetNet;
+import com.pastlands.cosmeticslite.entity.PetManager;
+import com.pastlands.cosmeticslite.network.PacketSetPetColor;
+import com.pastlands.cosmeticslite.network.PacketSetPetVariant;
+import com.pastlands.cosmeticslite.network.S2CEntitlementsSync;
+import com.pastlands.cosmeticslite.network.S2CEquipDenied;
+import com.pastlands.cosmeticslite.network.SyncCosmeticsAccessPacket;
+import net.minecraft.resources.ResourceLocation;
+import net.minecraft.server.level.ServerPlayer;
+import java.util.Optional;
+import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.player.Player;
+import net.minecraftforge.common.MinecraftForge;
+import net.minecraftforge.common.capabilities.RegisterCapabilitiesEvent;
+import net.minecraftforge.event.AttachCapabilitiesEvent;
+import net.minecraftforge.event.RegisterCommandsEvent;
+import net.minecraftforge.event.entity.player.PlayerEvent;
+import net.minecraftforge.eventbus.api.IEventBus;
+import net.minecraftforge.eventbus.api.SubscribeEvent;
+import net.minecraftforge.fml.DistExecutor;
+import net.minecraftforge.fml.common.Mod;
+import net.minecraftforge.fml.javafmlmod.FMLJavaModLoadingContext;
+import net.minecraftforge.network.NetworkDirection;
+import net.minecraftforge.network.NetworkRegistry;
+import net.minecraftforge.network.PacketDistributor;
+import net.minecraftforge.network.simple.SimpleChannel;
+import net.minecraftforge.server.permission.nodes.PermissionNode;
+import net.minecraftforge.server.permission.nodes.PermissionTypes;
+import org.slf4j.Logger;
+
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.Map;
+
+/** Mod entrypoint. */
+@Mod(CosmeticsLite.MODID)
+public class CosmeticsLite {
+
+    public static final String MODID = "cosmeticslite";
+    private static final Logger LOG = LogUtils.getLogger();
+    // Public alias to satisfy logs used in other classes
+    public static final Logger LOGGER = LOG;
+
+    // ---- Networking ----
+    private static final String NET_VERSION = "1";
+    public static final SimpleChannel NETWORK = NetworkRegistry.newSimpleChannel(
+            ResourceLocation.fromNamespaceAndPath(MODID, "main"),
+            () -> NET_VERSION,
+            NET_VERSION::equals,
+            NET_VERSION::equals
+    );
+
+    private static int NEXT_ID = 0;
+    private static int id() { return NEXT_ID++; }
+
+    // ---- Permissions ----
+    public static final PermissionNode<Boolean> PERM_MENU =
+            new PermissionNode<>(MODID, "menu", PermissionTypes.BOOLEAN,
+                    (player, uuid, ctx) -> true); // default: allow all
+
+    public static final PermissionNode<Boolean> PERM_ADMIN =
+            new PermissionNode<>(MODID, "admin", PermissionTypes.BOOLEAN,
+                    (player, uuid, ctx) -> player.hasPermissions(2)); // default: OPs only
+
+@SuppressWarnings("removal")
+public CosmeticsLite() {
+    IEventBus modBus = FMLJavaModLoadingContext.get().getModEventBus();
+    modBus.addListener(CosmeticsLite::onRegisterCapabilities);
+
+    DistExecutor.unsafeRunWhenOn(
+            net.minecraftforge.api.distmarker.Dist.CLIENT,
+            () -> () -> modBus.addListener(this::onRegisterLayers)
+    );
+
+    PetEntities.register(modBus);
+    MinecraftForge.EVENT_BUS.register(this);
+
+    registerPackets();
+
+    // ✅ Initialize network first
+    GadgetNet.init();
+
+    // ✅ Ensure registry fully populated before dev gadgets
+    if (CosmeticsRegistry.all().isEmpty()) {
+        LOG.info("[{}] Registry empty at init; installing dev seed.", MODID);
+        CosmeticsRegistry.replaceAll(Collections.emptyList(), /*addDevSeed=*/true);
+    }
+
+
+    LOG.info("[{}] Registry at init: {} cosmetic(s).", MODID, CosmeticsRegistry.all().size());
+    LOG.info("[{}] Initialized.", MODID);
+}
+
+
+
+    // --------------------------------------------------------------------------------------------
+    // Packets
+    // --------------------------------------------------------------------------------------------
+    private static void registerPackets() {
+        NETWORK.registerMessage(
+                id(), PacketEquipRequest.class,
+                PacketEquipRequest::encode, PacketEquipRequest::decode, PacketEquipRequest::handle
+        );
+        NETWORK.registerMessage(
+                id(), PacketSyncCosmetics.class,
+                PacketSyncCosmetics::encode, PacketSyncCosmetics::decode, PacketSyncCosmetics::handle
+        );
+        NETWORK.registerMessage(
+                id(), OpenCosmeticsScreenPacket.class,
+                OpenCosmeticsScreenPacket::encode, OpenCosmeticsScreenPacket::decode, OpenCosmeticsScreenPacket::handle
+        );
+        NETWORK.registerMessage(
+                id(), SyncCosmeticsAccessPacket.class,
+                SyncCosmeticsAccessPacket::encode,
+                SyncCosmeticsAccessPacket::decode,
+                SyncCosmeticsAccessPacket::handle
+        );
+        // 🔹 PET color wheel UI -> server
+        NETWORK.registerMessage(
+                id(), PacketSetPetColor.class,
+                PacketSetPetColor::encode,
+                PacketSetPetColor::decode,
+                PacketSetPetColor::handle
+        );
+        // 🔹 PET variant dropdown -> server
+        NETWORK.registerMessage(
+                id(), PacketSetPetVariant.class,
+                PacketSetPetVariant::encode,
+                PacketSetPetVariant::decode,
+                PacketSetPetVariant::handle
+        );
+        // 🔹 NEW: Entitlements snapshot (server -> client)
+        NETWORK.registerMessage(
+                id(), S2CEntitlementsSync.class,
+                S2CEntitlementsSync::encode,
+                S2CEntitlementsSync::decode,
+                S2CEntitlementsSync::handle,
+                Optional.of(NetworkDirection.PLAY_TO_CLIENT)
+        );
+		// 🔹 Denied equip feedback (server -> client)
+        NETWORK.registerMessage(
+                id(), S2CEquipDenied.class,
+                S2CEquipDenied::encode,
+                S2CEquipDenied::decode,
+                S2CEquipDenied::handle,
+                Optional.of(NetworkDirection.PLAY_TO_CLIENT)
+        );
+
+    }
+
+    /** Helper: send current entitlements snapshot to a single player. */
+    public static void sendEntitlements(ServerPlayer sp) {
+        if (sp == null) return;
+        PlayerEntitlements.get(sp).ifPresent(cap -> {
+            NETWORK.send(PacketDistributor.PLAYER.with(() -> sp),
+                    new S2CEntitlementsSync(cap.allPacks(), cap.allCosmetics()));
+        });
+		
+    }
+
+    // --------------------------------------------------------------------------------------------
+    // Capability registration & attachment
+    // --------------------------------------------------------------------------------------------
+    private static void onRegisterCapabilities(RegisterCapabilitiesEvent event) {
+        event.register(PlayerData.class);
+        event.register(PlayerEntitlements.class); // NEW
+        LOG.debug("[{}] Registered capabilities: PlayerData, PlayerEntitlements", MODID);
+    }
+
+    @SubscribeEvent
+    public void onAttachCapabilitiesEntity(AttachCapabilitiesEvent<Entity> event) {
+        if (event.getObject() instanceof Player) {
+            event.addCapability(PlayerData.CAP_ID, new PlayerData.Provider());
+            event.addCapability(PlayerEntitlements.CAP_ID, new PlayerEntitlements.Provider()); // NEW
+        }
+    }
+
+    // --------------------------------------------------------------------------------------------
+    // Command registration (SERVER)
+    // --------------------------------------------------------------------------------------------
+    @SubscribeEvent
+    public void onRegisterCommands(RegisterCommandsEvent event) {
+        LOG.info("[{}] Registering commands via CosmeticCommand.register", MODID);
+        CosmeticCommand.register(event.getDispatcher()); // /cosmetics menu
+    }
+
+    // --------------------------------------------------------------------------------------------
+    // Sync points (server -> client) + Pet Management
+    // --------------------------------------------------------------------------------------------
+    @SubscribeEvent
+    public void onPlayerLogin(PlayerEvent.PlayerLoggedInEvent event) {
+        if (event.getEntity() instanceof ServerPlayer sp) {
+            CosmeticsSync.sync(sp);
+            CosmeticCommand.sendAccessSync(sp);
+            sendEntitlements(sp); // NEW: push entitlements on login
+            sp.level().getServer().execute(() -> PetManager.updatePlayerPet(sp));
+        }
+    }
+
+    @SubscribeEvent
+    public void onPlayerChangedDimension(PlayerEvent.PlayerChangedDimensionEvent event) {
+        if (event.getEntity() instanceof ServerPlayer sp) {
+            CosmeticsSync.sync(sp);
+            CosmeticCommand.sendAccessSync(sp);
+            sendEntitlements(sp); // keep in step with other syncs
+            PetManager.updatePlayerPet(sp);
+        }
+    }
+
+    @SubscribeEvent
+    public void onPlayerClone(PlayerEvent.Clone event) {
+        var oldP = event.getOriginal();
+        var newP = event.getEntity();
+
+        oldP.reviveCaps();
+        // Copy PlayerData
+        PlayerData.get(oldP instanceof ServerPlayer ? (ServerPlayer) oldP : null).ifPresent(oldData ->
+            PlayerData.get(newP instanceof ServerPlayer ? (ServerPlayer) newP : null).ifPresent(newData ->
+                newData.deserializeNBT(oldData.serializeNBT())
+            )
+        );
+        // Copy PlayerEntitlements (round-trip via NBT for forward-compat)
+        PlayerEntitlements.get(oldP instanceof ServerPlayer ? (ServerPlayer) oldP : null).ifPresent(oldEnt ->
+            PlayerEntitlements.get(newP instanceof ServerPlayer ? (ServerPlayer) newP : null).ifPresent(newEnt ->
+                newEnt.deserializeNBT(oldEnt.serializeNBT())
+            )
+        );
+        oldP.invalidateCaps();
+
+        if (newP instanceof ServerPlayer sp) {
+            CosmeticsSync.sync(sp);
+            CosmeticCommand.sendAccessSync(sp);
+            sendEntitlements(sp);
+            sp.level().getServer().execute(() -> PetManager.updatePlayerPet(sp));
+        }
+    }
+
+    @SubscribeEvent
+    public void onPlayerRespawn(PlayerEvent.PlayerRespawnEvent event) {
+        if (event.getEntity() instanceof ServerPlayer sp) {
+            CosmeticsSync.sync(sp);
+            CosmeticCommand.sendAccessSync(sp);
+            sendEntitlements(sp);
+            PetManager.updatePlayerPet(sp);
+        }
+    }
+
+    @SubscribeEvent
+    public void onPlayerLogout(PlayerEvent.PlayerLoggedOutEvent event) {
+        if (event.getEntity() instanceof ServerPlayer sp) {
+            PetManager.cleanupPlayer(sp.getUUID());
+        }
+    }
+
+    @SubscribeEvent
+    public void onStartTracking(PlayerEvent.StartTracking event) {
+        if (!(event.getEntity() instanceof ServerPlayer viewer)) return;
+        var target = event.getTarget();
+        if (target instanceof ServerPlayer subject) {
+            CosmeticsSync.syncTo(viewer, subject);
+            // Intentionally NOT sending entitlements here: they are private to the owner client.
+        }
+    }
+
+    // --------------------------------------------------------------------------------------------
+    // Client model layer registration
+    // --------------------------------------------------------------------------------------------
+        @net.minecraftforge.api.distmarker.OnlyIn(net.minecraftforge.api.distmarker.Dist.CLIENT)
+    private void onRegisterLayers(net.minecraftforge.client.event.EntityRenderersEvent.RegisterLayerDefinitions event) {
+        com.pastlands.cosmeticslite.client.model.CosmeticsModels.registerLayers(event);
+    }
+
+   // --------------------------------------------------------------------------------------------
+// Client setup – ensures GadgetTiming burst scheduler is registered early
+// --------------------------------------------------------------------------------------------
+@Mod.EventBusSubscriber(modid = CosmeticsLite.MODID, bus = Mod.EventBusSubscriber.Bus.MOD, value = net.minecraftforge.api.distmarker.Dist.CLIENT)
+public static final class ClientSetup {
+    @SubscribeEvent
+    public static void onClientSetup(final net.minecraftforge.fml.event.lifecycle.FMLClientSetupEvent event) {
+        event.enqueueWork(() -> {
+            // Force GadgetTiming listener registration
+            com.pastlands.cosmeticslite.gadget.GadgetTiming.ClientBurstScheduler.scheduleBursts(
+                com.pastlands.cosmeticslite.gadget.GadgetTiming.from(java.util.Map.of()),
+                () -> {}
+            );
+            CosmeticsLite.LOGGER.info("[CosmeticsLite] ClientBurstScheduler primed for cinematic gadget FX");
+        });
+    }
+}
+}
+
