@@ -1,16 +1,43 @@
-# Compiled class file
+################################################################################
+# CosmeticsLite – Minecraft Forge Mod
+# Clean .gitignore for Gradle-based Forge 1.20.1 projects
+################################################################################
+
+# === Java ===
 *.class
-
-# Log file
 *.log
+hs_err_pid*
+replay_pid*
 
-# BlueJ files
-*.ctxt
+# === Forge / Gradle ===
+.gradle/
+build/
+out/
+run/
+run-data/
+logs/
+!gradle/wrapper/gradle-wrapper.jar   # keep wrapper jar so others can build
+*.lock
+*.tmp
+*.bak
+*.swp
 
-# Mobile Tools for Java (J2ME)
-.mtj.tmp/
+# === Development Tools ===
+# IntelliJ IDEA
+.idea/
+*.iml
+*.iws
+out/
 
-# Package Files #
+# Eclipse
+.classpath
+.project
+.settings/
+
+# VS Code
+.vscode/
+
+# === Distribution Archives ===
 *.jar
 *.war
 *.nar
@@ -19,6 +46,26 @@
 *.tar.gz
 *.rar
 
-# virtual machine crash logs, see http://www.java.com/en/download/help/error_hotspot.xml
-hs_err_pid*
-replay_pid*
+# === OS-Specific Junk ===
+.DS_Store
+Thumbs.db
+desktop.ini
+ehthumbs.db
+
+# === Misc Cache / Backups ===
+*.tmp
+*.bak
+*.old
+*.orig
+*.rej
+
+# === Forge User Data ===
+# Client-specific or runtime data folders that should not be tracked
+config/
+crash-reports/
+saves/
+screenshots/
+
+################################################################################
+# End of file
+################################################################################
