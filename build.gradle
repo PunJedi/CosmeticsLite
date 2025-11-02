@@ -87,10 +87,24 @@ sourceSets.main.resources {
 // --------------------------------------------------------------------------
 
 repositories {
+    // Mojang libraries (needed for net.minecraft:client artifacts)
+    maven {
+        name = "Mojang"
+        url = "https://libraries.minecraft.net/"
+    }
+
+    // Forge maven (needed for the Forge artifact and FG tooling)
+    maven {
+        name = "Forge"
+        url = "https://maven.minecraftforge.net/"
+    }
+
+    // Parchment mappings
     maven {
         name = "ParchmentMC"
         url = "https://maven.parchmentmc.org"
     }
+
     mavenCentral()
 }
 
@@ -165,6 +179,7 @@ publishing {
         }
     }
 }
+
 
 // --------------------------------------------------------------------------
 // Java compiler settings

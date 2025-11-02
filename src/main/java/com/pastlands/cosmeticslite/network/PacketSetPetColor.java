@@ -2,7 +2,9 @@
 package com.pastlands.cosmeticslite.network;
 
 import com.mojang.logging.LogUtils;
+import com.pastlands.cosmeticslite.PlayerData;
 import com.pastlands.cosmeticslite.entity.PetManager;
+import net.minecraft.nbt.CompoundTag;
 import net.minecraft.network.FriendlyByteBuf;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.Entity;
@@ -12,6 +14,9 @@ import net.minecraft.world.item.DyeColor;
 import net.minecraftforge.network.NetworkEvent;
 import org.slf4j.Logger;
 
+import java.lang.reflect.Method;
+import java.util.Locale;
+import java.util.Optional;
 import java.util.Random;
 import java.util.function.Supplier;
 
@@ -22,14 +27,25 @@ import java.util.function.Supplier;
  *  - Wolf: sets collar color via Wolf#setCollarColor(DyeColor)
  *  - Sheep: sets fleece color via Sheep#setColor(DyeColor)
  *
- * Maps arbitrary 0xRRGGBB input from the color wheel to the nearest DyeColor
- * (or picks a random dye when requested).
+ * Behavior:
+ *  - If msg.random == true:
+ *      Enable Random (PNBT pet_random=true), scrub PNBT "pet_dye",
+ *      clear entity lock (coslite.dye), and let PetManager roll once.
+ *  - If msg.random == false (explicit color pick):
+ *      Disable Random (PNBT pet_random=false), persist PNBT "pet_dye",
+ *      clear entity lock (coslite.dye), apply immediately to active pet,
+ *      and let PetManager keep it stable across re-equip/relog.
  *
  * Forge 47.4.0 • MC 1.20.1 • Java 17
  */
 public class PacketSetPetColor {
     private static final Logger LOGGER = LogUtils.getLogger();
     private static final Random RNG = new Random();
+
+    // PNBT keys (must match PetManager)
+    private static final String PNBT_ROOT        = "coslite";
+    private static final String PNBT_PET_DYE     = "pet_dye";
+    private static final String PNBT_PET_RANDOM  = "pet_random";
 
     private final int rgb;       // 0xRRGGBB
     private final boolean random;
@@ -57,42 +73,77 @@ public class PacketSetPetColor {
             ServerPlayer player = ctx.get().getSender();
             if (player == null) return;
 
-            LOGGER.info("[CosmeticsLite] Received pet color update from {}: rgb=0x{}, random={}",
-                    player.getGameProfile().getName(),
-                    String.format("%06X", msg.rgb),
-                    msg.random
-            );
+            // Get active pet once (may be null)
+            Entity active = PetManager.getActivePet(player);
 
-            // 🔹 Locate the player's active cosmetic pet
-            Entity pet = PetManager.getActivePet(player);
-            if (pet == null) {
-                LOGGER.debug("[CosmeticsLite] No active pet for {}, ignoring color packet.", player.getGameProfile().getName());
+            if (msg.random) {
+                // RANDOM ON: mirror flag, scrub explicit PNBT dye, clear entity's locked dye so applySavedStyle rolls once
+                setRandom(player, true);
+                scrubExplicitDye(player);
+                clearEntityDyeLock(active);
+                PetManager.updatePlayerPet(player);
                 return;
             }
 
-            // 🐺 Wolf: map RGB -> DyeColor (or random) and apply collar
-            if (pet instanceof Wolf wolf) {
-                DyeColor dye = msg.random ? randomDye() : nearestDye(msg.rgb);
-                wolf.setCollarColor(dye);
-                LOGGER.info("[CosmeticsLite] Applied wolf collar color {} (rgb=0x{}) for {}",
-                        dye.getName(), String.format("%06X", dye.getTextColor()), player.getGameProfile().getName());
-                return;
-            }
-
-            // 🐑 Sheep: map RGB -> DyeColor (or random) and apply fleece color
-            if (pet instanceof Sheep sheep) {
-                DyeColor dye = msg.random ? randomDye() : nearestDye(msg.rgb);
-                sheep.setColor(dye);
-                LOGGER.info("[CosmeticsLite] Applied sheep fleece color {} (rgb=0x{}) for {}",
-                        dye.getName(), String.format("%06X", dye.getTextColor()), player.getGameProfile().getName());
-                return;
-            }
-
-            // (Other pets can be added here later; for now, color is wolf/sheep only)
-            LOGGER.debug("[CosmeticsLite] Color packet received, but active pet type ({}) not handled for color.",
-                    pet.getClass().getName());
+            // EXPLICIT COLOR: force Random OFF, persist explicit dye, clear entity lock, apply immediately
+            DyeColor chosen = nearestDye(msg.rgb);
+            setRandom(player, false);
+            persistExplicitDye(player, chosen);
+            clearEntityDyeLock(active);
+            applyToActivePet(player, chosen); // immediate visual
+            // PetManager.applySavedStyle will see PNBT pet_dye and keep it stable
         });
         ctx.get().setPacketHandled(true);
+    }
+
+    // ---------------- Random / PNBT helpers ----------------
+
+    private static void setRandom(ServerPlayer player, boolean on) {
+        CompoundTag root = player.getPersistentData().getCompound(PNBT_ROOT);
+        if (root.isEmpty()) root = new CompoundTag();
+        root.putBoolean(PNBT_PET_RANDOM, on);
+        player.getPersistentData().put(PNBT_ROOT, root);
+    }
+
+    private static void scrubExplicitDye(ServerPlayer player) {
+        CompoundTag root = player.getPersistentData().getCompound(PNBT_ROOT);
+        if (!root.isEmpty() && root.contains(PNBT_PET_DYE)) {
+            root.remove(PNBT_PET_DYE);
+            player.getPersistentData().put(PNBT_ROOT, root);
+        }
+    }
+
+    private static void persistExplicitDye(ServerPlayer player, DyeColor dye) {
+        CompoundTag root = player.getPersistentData().getCompound(PNBT_ROOT);
+        if (root.isEmpty()) root = new CompoundTag();
+        root.putString(PNBT_PET_DYE, dye.getName());
+        root.putBoolean(PNBT_PET_RANDOM, false);
+        player.getPersistentData().put(PNBT_ROOT, root);
+    }
+
+    // Clear the entity-side random "lock" so our next style application (or immediate set) wins.
+    private static void clearEntityDyeLock(Entity pet) {
+        if (pet == null) return;
+        CompoundTag etag = pet.getPersistentData().getCompound(PNBT_ROOT);
+        if (!etag.isEmpty() && etag.contains("dye")) {
+            etag.remove("dye");
+            pet.getPersistentData().put(PNBT_ROOT, etag);
+        }
+    }
+
+    // ---------------- Apply to active pet ----------------
+
+    private static void applyToActivePet(ServerPlayer player, DyeColor dye) {
+        Entity pet = PetManager.getActivePet(player);
+        if (pet == null) return;
+
+        if (pet instanceof Wolf wolf) {
+            wolf.setCollarColor(dye);
+            return;
+        }
+        if (pet instanceof Sheep sheep) {
+            sheep.setColor(dye);
+        }
     }
 
     // ---------------- Helpers ----------------

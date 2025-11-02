@@ -6,29 +6,39 @@ import net.minecraft.network.syncher.EntityDataAccessor;
 import net.minecraft.network.syncher.EntityDataSerializers;
 import net.minecraft.network.syncher.SynchedEntityData;
 import net.minecraft.server.level.ServerPlayer;
-import net.minecraft.util.RandomSource;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.InteractionResult;
 import net.minecraft.world.entity.EntityType;
-import net.minecraft.world.entity.ai.goal.*;
+import net.minecraft.world.entity.ai.goal.FloatGoal;
+import net.minecraft.world.entity.ai.goal.LookAtPlayerGoal;
+import net.minecraft.world.entity.ai.goal.RandomLookAroundGoal;
+import net.minecraft.world.entity.ai.goal.WaterAvoidingRandomStrollGoal;
 import net.minecraft.world.entity.animal.Sheep;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.DyeColor;
+import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.Level;
 import net.minecraft.sounds.SoundEvents;
 import net.minecraft.sounds.SoundSource;
 
 import javax.annotation.Nullable;
+import java.util.Locale;
 import java.util.UUID;
 
 /**
  * Cosmetic Pet Sheep - a fluffy companion with colorful wool.
- * Comes in all 16 dye colors and never needs shearing.
+ * - No random color ever
+ * - Color persists across relogs via NBT ("CosLiteDye")
+ * - Always invulnerable & unshearable
  */
 public class CosmeticPetSheep extends Sheep {
 
     private static final EntityDataAccessor<String> OWNER_UUID =
             SynchedEntityData.defineId(CosmeticPetSheep.class, EntityDataSerializers.STRING);
+
+    // NBT keys (keep OwnerUUID for backward compatibility)
+    private static final String NBT_OWNER     = "OwnerUUID";
+    private static final String NBT_DYE       = "CosLiteDye";
 
     // Timer for random friendly bleats
     private int bleatCooldown = 0;
@@ -36,11 +46,10 @@ public class CosmeticPetSheep extends Sheep {
     public CosmeticPetSheep(EntityType<? extends Sheep> entityType, Level level) {
         super(entityType, level);
 
-        // Random wool color
-        RandomSource random = level.random;
-        DyeColor[] colors = DyeColor.values();
-        this.setColor(colors[random.nextInt(colors.length)]);
+        // DO NOT RANDOMIZE COLOR — start deterministic then override from NBT/PlayerData
+        this.setColor(DyeColor.WHITE);
         this.setSheared(false); // always fluffy
+        this.setInvulnerable(true);
     }
 
     @Override
@@ -63,6 +72,8 @@ public class CosmeticPetSheep extends Sheep {
         this.goalSelector.addGoal(4, new RandomLookAroundGoal(this));
     }
 
+    /* --------------------------- Ownership --------------------------- */
+
     public void setOwner(@Nullable Player player) {
         if (player != null) {
             this.entityData.set(OWNER_UUID, player.getUUID().toString());
@@ -72,7 +83,7 @@ public class CosmeticPetSheep extends Sheep {
     @Nullable
     public Player getOwner() {
         String uuidStr = this.entityData.get(OWNER_UUID);
-        if (uuidStr.isEmpty()) return null;
+        if (uuidStr == null || uuidStr.isEmpty()) return null;
 
         try {
             UUID ownerUUID = UUID.fromString(uuidStr);
@@ -85,6 +96,13 @@ public class CosmeticPetSheep extends Sheep {
             return null;
         }
     }
+
+    private boolean isOwner(Player player) {
+        String ownerUuidStr = this.entityData.get(OWNER_UUID);
+        return ownerUuidStr != null && !ownerUuidStr.isEmpty() && ownerUuidStr.equals(player.getUUID().toString());
+    }
+
+    /* --------------------------- Interact --------------------------- */
 
     @Override
     public InteractionResult mobInteract(Player player, InteractionHand hand) {
@@ -99,10 +117,7 @@ public class CosmeticPetSheep extends Sheep {
         return InteractionResult.PASS;
     }
 
-    private boolean isOwner(Player player) {
-        String ownerUuidStr = this.entityData.get(OWNER_UUID);
-        return !ownerUuidStr.isEmpty() && ownerUuidStr.equals(player.getUUID().toString());
-    }
+    /* --------------------------- Overrides to keep it cosmetic-only --------------------------- */
 
     @Override
     public boolean hurt(net.minecraft.world.damagesource.DamageSource damageSource, float amount) {
@@ -115,18 +130,24 @@ public class CosmeticPetSheep extends Sheep {
     }
 
     @Override
-    public boolean isFood(net.minecraft.world.item.ItemStack stack) {
+    public boolean isFood(ItemStack stack) {
         return false;
     }
 
+    /* --------------------------- Main tick / behavior --------------------------- */
+
     @Override
     public void aiStep() {
-        // Bandaid: swallow any sheep-internal crashes
+        // Guard against any base-class surprises
         try {
             super.aiStep();
         } catch (NullPointerException ignored) {}
 
-        // Cosmetic follow-owner behavior
+        // Always fluffy and invulnerable (server & client)
+        this.setSheared(false);
+        this.setInvulnerable(true);
+
+        // Cosmetic follow-owner behavior (server only)
         Player owner = getOwner();
         if (owner != null && !this.level().isClientSide) {
             double distance = this.distanceTo(owner);
@@ -142,15 +163,12 @@ public class CosmeticPetSheep extends Sheep {
             }
         }
 
-        // Always fluffy
-        this.setSheared(false);
-
-        // Random friendly bleat every ~5–15 seconds
+        // Random friendly bleat every ~5–15 seconds (server side)
         if (!this.level().isClientSide) {
             if (bleatCooldown > 0) {
                 bleatCooldown--;
             } else {
-                if (this.random.nextInt(200) == 0) { // 1/200 chance each tick when off cooldown
+                if (this.random.nextInt(200) == 0) { // ~1/200 chance each tick when off cooldown
                     this.level().playSound(null, this.blockPosition(),
                             SoundEvents.SHEEP_AMBIENT, SoundSource.NEUTRAL,
                             1.0f, 1.0f);
@@ -161,21 +179,60 @@ public class CosmeticPetSheep extends Sheep {
     }
 
     @Override
+    public void tick() {
+        super.tick();
+
+        // Keep invulnerable & fluffy
+        this.setInvulnerable(true);
+        this.setSheared(false);
+    }
+
+    /* --------------------------- Save/Load (persist dye & owner) --------------------------- */
+
+    @Override
     public void addAdditionalSaveData(CompoundTag compound) {
         super.addAdditionalSaveData(compound);
+
+        // Owner
         String ownerUuid = this.entityData.get(OWNER_UUID);
-        if (!ownerUuid.isEmpty()) {
-            compound.putString("OwnerUUID", ownerUuid);
+        if (ownerUuid != null && !ownerUuid.isEmpty()) {
+            compound.putString(NBT_OWNER, ownerUuid);
+        }
+
+        // Persist current dye color (authoritative across relogs)
+        DyeColor c = this.getColor();
+        if (c != null) {
+            compound.putString(NBT_DYE, c.getName());
         }
     }
 
     @Override
     public void readAdditionalSaveData(CompoundTag compound) {
         super.readAdditionalSaveData(compound);
-        if (compound.contains("OwnerUUID")) {
-            this.entityData.set(OWNER_UUID, compound.getString("OwnerUUID"));
+
+        // Owner
+        if (compound.contains(NBT_OWNER)) {
+            this.entityData.set(OWNER_UUID, compound.getString(NBT_OWNER));
         }
+
+        // Restore saved dye color; if absent, keep current (WHITE) until PetManager applies PlayerData
+        if (compound.contains(NBT_DYE)) {
+            String name = compound.getString(NBT_DYE);
+            if (name != null && !name.isBlank()) {
+                DyeColor saved = DyeColor.byName(name.toLowerCase(Locale.ROOT), null);
+                if (saved != null) {
+                    this.setColor(saved);
+                }
+            }
+        }
+
+        // Never sheared
+        this.setSheared(false);
+        // And invulnerable
+        this.setInvulnerable(true);
     }
+
+    /* --------------------------- Despawn policy --------------------------- */
 
     public boolean shouldDespawn() {
         Player owner = getOwner();
@@ -188,14 +245,5 @@ public class CosmeticPetSheep extends Sheep {
             return this.distanceTo(owner) > 128.0;
         }
         return false;
-    }
-
-    @Override
-    public void tick() {
-        super.tick();
-
-        if (!this.level().isClientSide && shouldDespawn()) {
-            this.discard();
-        }
     }
 }

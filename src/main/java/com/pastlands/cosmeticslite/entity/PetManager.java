@@ -2,75 +2,112 @@
 package com.pastlands.cosmeticslite.entity;
 
 import com.mojang.logging.LogUtils;
+import com.pastlands.cosmeticslite.CosmeticsLite;
 import com.pastlands.cosmeticslite.PlayerData;
+import net.minecraft.core.BlockPos;
+import net.minecraft.nbt.CompoundTag;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
-import net.minecraft.world.entity.Entity;
+import net.minecraft.util.Mth;
+import net.minecraft.world.InteractionResult;
+import net.minecraft.world.entity.*;
+import net.minecraft.world.entity.animal.IronGolem;
+import net.minecraft.world.entity.animal.Sheep;
+import net.minecraft.world.entity.animal.Wolf;
 import net.minecraft.world.entity.animal.horse.AbstractHorse;
+import net.minecraft.world.entity.monster.Blaze;
+import net.minecraft.world.item.DyeColor;
 import net.minecraft.world.phys.Vec3;
+import net.minecraftforge.event.TickEvent;
+import net.minecraftforge.event.entity.EntityJoinLevelEvent;
+import net.minecraftforge.event.entity.living.LivingAttackEvent;
+import net.minecraftforge.event.entity.living.LivingDamageEvent;
+import net.minecraftforge.event.entity.living.LivingHurtEvent;
+import net.minecraftforge.event.entity.player.PlayerEvent;
+import net.minecraftforge.event.entity.player.PlayerInteractEvent;
+import net.minecraftforge.eventbus.api.SubscribeEvent;
+import net.minecraftforge.fml.common.Mod;
 import org.slf4j.Logger;
 
-import java.util.HashMap;
-import java.util.Map;
-import java.util.UUID;
+import java.lang.reflect.Method;
+import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * Manages spawning and despawning of real AI pets for players.
- * Forge 47.4.0 (MC 1.20.1)
+ * Cosmetic pet lifecycle + safety (Forge 47.4.0 / MC 1.20.1).
+ * - No implicit color fallback (never force WHITE).
+ * - Random honored on relog and re-equip; always yields a fresh color.
+ * - Live GUI picks persist when Random is OFF.
  */
+@Mod.EventBusSubscriber(modid = CosmeticsLite.MODID, bus = Mod.EventBusSubscriber.Bus.FORGE)
 public class PetManager {
     private static final Logger LOGGER = LogUtils.getLogger();
 
-    // Track active pets per player
-    private static final Map<UUID, Entity> ACTIVE_PETS = new HashMap<>();
+    // Active pets per player
+    private static final Map<UUID, Entity> ACTIVE_PETS = new ConcurrentHashMap<>();
 
-    /**
-     * Check if a player should have an active pet and spawn/despawn accordingly.
-     */
+    // Post-login warm-up ticks to re-apply styling while PlayerData initializes
+    private static final Map<UUID, Integer> LOGIN_WARMUP = new ConcurrentHashMap<>();
+    private static final int WARMUP_TICKS = 120;             // ~6 seconds
+
+    // Pet entity persistent-data (on the entity itself)
+    private static final String ENBT_ROOT   = "coslite";
+    private static final String ENBT_OWNER  = "owner";
+    private static final String ENBT_DYE    = "dye";
+    private static final String ENBT_VAR    = "variant";
+    private static final String ENBT_LAST_INTERACT_TICK = "lastInteractTick";
+
+    // Player persistent-data (server-side)
+    private static final String PNBT_ROOT              = "coslite";
+    private static final String PNBT_PET_DYE           = "pet_dye";           // last explicit user-selected dye
+    private static final String PNBT_PET_VAR           = "pet_variant";       // optional
+    private static final String PNBT_PET_RANDOM        = "pet_random";        // Random toggle
+    private static final String PNBT_LAST_RANDOM_DYE   = "pet_last_random_dye"; // last randomly chosen dye name
+
+    private static final int INTERACT_COOLDOWN_TICKS = 20 * 3; // 3s
+    private static final int PRESENCE_CHECK_PERIOD   = 40;     // 2s
+
+    /* ====================================================================== */
+    /* Public API                                                             */
+    /* ====================================================================== */
+
     public static void updatePlayerPet(ServerPlayer player) {
         if (player == null || !(player.level() instanceof ServerLevel serverLevel)) {
-            LOGGER.warn("[PetManager] updatePlayerPet called with invalid player or non-server level");
+            LOGGER.warn("[PetManager] updatePlayerPet with invalid player or non-server level");
             return;
         }
 
-        UUID playerId = player.getUUID();
-        Entity currentPet = ACTIVE_PETS.get(playerId);
+        Entity current = ACTIVE_PETS.get(player.getUUID());
+        ResourceLocation petId = PlayerData.get(player)
+                .map(pd -> pd.getEquippedId("pets"))
+                .orElse(null);
 
-        PlayerData.get(player).ifPresentOrElse(data -> {
-            ResourceLocation petId = data.getEquippedId("pets");
-            LOGGER.debug("[PetManager] updatePlayerPet for {} ({}): equipped pet={}",
-                    player.getGameProfile().getName(), playerId, petId);
+        if (!shouldSpawnRealPet(petId)) {
+            if (current != null && !current.isRemoved()) despawnPet(player.getUUID(), player);
+            return;
+        }
 
-            if (shouldSpawnRealPet(petId)) {
-                if (currentPet == null || currentPet.isRemoved() || !isCorrectPetType(currentPet, petId)) {
-                    LOGGER.debug("[PetManager] Spawning new {} for {}", petId, player.getGameProfile().getName());
-                    spawnPetForId(player, serverLevel, petId);
-                } else {
-                    LOGGER.debug("[PetManager] {} already has correct active pet: {}",
-                            player.getGameProfile().getName(),
-                            currentPet.getClass().getSimpleName());
-                }
-            } else {
-                if (currentPet != null && !currentPet.isRemoved()) {
-                    LOGGER.debug("[PetManager] Despawning pet {} for {} (equipped was {})",
-                            currentPet.getId(), player.getGameProfile().getName(), petId);
-                    despawnPet(playerId);
-                } else {
-                    LOGGER.debug("[PetManager] No pet equipped and none active for {}", player.getGameProfile().getName());
-                }
-            }
-        }, () -> LOGGER.warn("[PetManager] No PlayerData capability for {}", player.getGameProfile().getName()));
+        if (current == null || current.isRemoved() || !isCorrectPetType(current, petId)) {
+            spawnPetForId(player, serverLevel, petId);
+        } else {
+            applyCosmeticSafety(current);
+            applySavedStyle(player, current);
+        }
     }
 
-    /**
-     * Spawn the appropriate pet based on the pet ID.
-     */
-    private static void spawnPetForId(ServerPlayer player, ServerLevel level, ResourceLocation petId) {
-        LOGGER.debug("[PetManager] spawnPetForId for {} with pet {}", player.getGameProfile().getName(), petId);
+    /** For packets to fetch the currently spawned cosmetic pet. */
+    public static Entity getActivePet(ServerPlayer player) {
+        return (player == null) ? null : ACTIVE_PETS.get(player.getUUID());
+    }
 
-        // Remove existing pet first
-        despawnPet(player.getUUID());
+    /* ====================================================================== */
+    /* Spawn / Despawn                                                        */
+    /* ====================================================================== */
+
+    private static void spawnPetForId(ServerPlayer player, ServerLevel level, ResourceLocation petId) {
+        // remove old (capture style first when Random is OFF)
+        despawnPet(player.getUUID(), player);
 
         try {
             Entity pet = createPetEntity(level, petId);
@@ -79,63 +116,494 @@ public class PetManager {
                 return;
             }
 
-            // Position near player
-            Vec3 playerPos = player.position();
-            Vec3 spawnPos = findSafeSpawnPosition(level, playerPos);
-            pet.setPos(spawnPos.x, spawnPos.y, spawnPos.z);
-            LOGGER.debug("[PetManager] Positioning {} at {}", petId, spawnPos);
+            // Position
+            Vec3 pos = findSafeSpawnPosition(level, player.position());
+            pet.setPos(pos.x, pos.y, pos.z);
 
-            // Ownership / health wiring
+            // Ownership / baseline health
             if (pet instanceof AbstractHorse ah) {
-                // Covers Horse, Donkey, Mule, Llama
                 ah.setTamed(true);
                 ah.setOwnerUUID(player.getUUID());
                 ah.setHealth(ah.getMaxHealth());
-            } else if (pet instanceof CosmeticPetWolf wolf) {
-                wolf.setOwner(player); wolf.setHealth(wolf.getMaxHealth());
-            } else if (pet instanceof CosmeticPetCat cat) {
-                cat.setOwner(player); cat.setHealth(cat.getMaxHealth());
-            } else if (pet instanceof CosmeticPetChicken chicken) {
-                chicken.setOwner(player); chicken.setHealth(chicken.getMaxHealth());
-            } else if (pet instanceof CosmeticPetFox fox) {
-                fox.setOwner(player); fox.setHealth(fox.getMaxHealth());
-            } else if (pet instanceof CosmeticPetAxolotl axolotl) {
-                axolotl.setOwner(player); axolotl.setHealth(axolotl.getMaxHealth());
-            } else if (pet instanceof CosmeticPetBee bee) {
-                bee.setOwner(player); bee.setHealth(bee.getMaxHealth());
-            } else if (pet instanceof CosmeticPetRabbit rabbit) {
-                rabbit.setOwner(player); rabbit.setHealth(rabbit.getMaxHealth());
-            } else if (pet instanceof CosmeticPetPig pig) {
-                pig.setOwner(player); pig.setHealth(pig.getMaxHealth());
-            } else if (pet instanceof CosmeticPetSheep sheep) {
-                sheep.setOwner(player); sheep.setHealth(sheep.getMaxHealth());
-            } else if (pet instanceof CosmeticPetPanda panda) {
-                panda.setOwner(player); panda.setHealth(panda.getMaxHealth());
-            } else if (pet instanceof CosmeticPetParrot parrot) {
-                parrot.setOwner(player); parrot.setHealth(parrot.getMaxHealth());
-            } else if (pet instanceof CosmeticPetFrog frog) {
-                frog.setOwner(player); frog.setHealth(frog.getMaxHealth());
-            } else if (pet instanceof CosmeticPetMooshroom mush) {
-                mush.setOwner(player); mush.setHealth(mush.getMaxHealth());
-            }
-            // Other pets (Golems, Blaze, etc.) can be extended here if needed.
+            } else if (pet instanceof CosmeticPetWolf w)  { w.setOwner(player); w.setHealth(w.getMaxHealth()); }
+              else if (pet instanceof CosmeticPetCat c)   { c.setOwner(player); c.setHealth(c.getMaxHealth()); }
+              else if (pet instanceof CosmeticPetChicken ch) { ch.setOwner(player); ch.setHealth(ch.getMaxHealth()); }
+              else if (pet instanceof CosmeticPetFox fx)  { fx.setOwner(player); fx.setHealth(fx.getMaxHealth()); }
+              else if (pet instanceof CosmeticPetAxolotl ax){ ax.setOwner(player); ax.setHealth(ax.getMaxHealth()); }
+              else if (pet instanceof CosmeticPetBee b)   { b.setOwner(player); b.setHealth(b.getMaxHealth()); }
+              else if (pet instanceof CosmeticPetRabbit r){ r.setOwner(player); r.setHealth(r.getMaxHealth()); }
+              else if (pet instanceof CosmeticPetPig pg)  { pg.setOwner(player); pg.setHealth(pg.getMaxHealth()); }
+              else if (pet instanceof CosmeticPetSheep s) { s.setOwner(player); s.setHealth(s.getMaxHealth()); }
+              else if (pet instanceof CosmeticPetPanda pa) { pa.setOwner(player); pa.setHealth(pa.getMaxHealth()); }
+              else if (pet instanceof CosmeticPetParrot pt){ pt.setOwner(player); pt.setHealth(pt.getMaxHealth()); }
+              else if (pet instanceof CosmeticPetFrog fr) { fr.setOwner(player); fr.setHealth(fr.getMaxHealth()); }
+              else if (pet instanceof CosmeticPetMooshroom ms){ ms.setOwner(player); ms.setHealth(ms.getMaxHealth()); }
 
-            boolean added = level.addFreshEntity(pet);
-            if (added) {
+            applyCosmeticSafety(pet);
+            applySavedStyle(player, pet);
+
+            if (level.addFreshEntity(pet)) {
                 ACTIVE_PETS.put(player.getUUID(), pet);
+                tagOwner(pet, player);
                 LOGGER.info("[PetManager] Spawned {} for {}", petId, player.getGameProfile().getName());
             } else {
-                LOGGER.error("[PetManager] Failed to add {} to world for {}", petId, player.getGameProfile().getName());
+                LOGGER.error("[PetManager] Failed to add {} for {}", petId, player.getGameProfile().getName());
             }
-        } catch (Exception e) {
-            LOGGER.error("[PetManager] Exception while spawning {} for {}",
-                    petId, player.getGameProfile().getName(), e);
+        } catch (Exception ex) {
+            LOGGER.error("[PetManager] Exception spawning {} for {}", petId, player.getGameProfile().getName(), ex);
         }
     }
 
-    /**
-     * Map cosmetic pet IDs to the corresponding custom entity classes.
-     */
+    /** Despawn and (if Random is OFF) persist live style to player NBT. */
+    public static void despawnPet(UUID playerId, ServerPlayer ownerIfOnline) {
+        Entity pet = ACTIVE_PETS.remove(playerId);
+        if (pet != null && !pet.isRemoved()) {
+            if (ownerIfOnline != null && !isRandomOn(ownerIfOnline)) {
+                captureStyleToPlayer(ownerIfOnline, pet); // persist explicit choice
+            }
+            pet.discard();
+        }
+    }
+
+    public static void cleanupPlayer(UUID playerId) {
+        despawnPet(playerId, null);
+    }
+
+    /* ====================================================================== */
+    /* Events                                                                  */
+    /* ====================================================================== */
+
+    // Helper: read last-known Random flag directly from player PNBT
+    private static boolean getRandomFlagPNBT(ServerPlayer p) {
+        CompoundTag root = p.getPersistentData().getCompound(PNBT_ROOT);
+        return !root.isEmpty() && root.getBoolean(PNBT_PET_RANDOM);
+    }
+
+    @SubscribeEvent
+    public static void onLogin(PlayerEvent.PlayerLoggedInEvent e) {
+        if (!(e.getEntity() instanceof ServerPlayer sp)) return;
+
+        // If Random was ON last session, scrub any persisted explicit dye on this login
+        if (getRandomFlagPNBT(sp)) {
+            CompoundTag root = sp.getPersistentData().getCompound(PNBT_ROOT);
+            if (!root.isEmpty() && root.contains(PNBT_PET_DYE)) {
+                root.remove(PNBT_PET_DYE);
+                sp.getPersistentData().put(PNBT_ROOT, root);
+            }
+        }
+
+        // Start warm-up window so Random wins as PD becomes available
+        LOGIN_WARMUP.put(sp.getUUID(), WARMUP_TICKS);
+
+        // Immediate update; next-tick update too
+        updatePlayerPet(sp);
+        sp.getServer().execute(() -> updatePlayerPet(sp));
+    }
+
+    @SubscribeEvent
+    public static void onRespawn(PlayerEvent.PlayerRespawnEvent e) {
+        if (e.getEntity() instanceof ServerPlayer sp) updatePlayerPet(sp);
+    }
+
+    @SubscribeEvent
+    public static void onDim(PlayerEvent.PlayerChangedDimensionEvent e) {
+        if (e.getEntity() instanceof ServerPlayer sp) updatePlayerPet(sp);
+    }
+
+    @SubscribeEvent
+    public static void onLogout(PlayerEvent.PlayerLoggedOutEvent e) {
+        if (!(e.getEntity() instanceof ServerPlayer sp)) return;
+        Entity pet = ACTIVE_PETS.get(sp.getUUID());
+        if (pet != null && !isRandomOn(sp)) captureStyleToPlayer(sp, pet); // don't persist when Random ON
+        cleanupPlayer(sp.getUUID());
+        LOGIN_WARMUP.remove(sp.getUUID());
+    }
+
+    @SubscribeEvent
+    public static void onPlayerTick(TickEvent.PlayerTickEvent e) {
+        if (!(e.player instanceof ServerPlayer sp)) return;
+
+        // During warm-up, keep updating every tick to let Random override once PD is ready
+        Integer warm = LOGIN_WARMUP.get(sp.getUUID());
+        if (warm != null && warm > 0) {
+            LOGIN_WARMUP.put(sp.getUUID(), warm - 1);
+            updatePlayerPet(sp);
+            // Do not return here; allow normal presence check too (harmless)
+        } else if (warm != null && warm <= 0) {
+            LOGIN_WARMUP.remove(sp.getUUID());
+        }
+
+        if (e.phase != TickEvent.Phase.END) return;
+        if (sp.tickCount % PRESENCE_CHECK_PERIOD != 0) return;
+
+        ResourceLocation desired = PlayerData.get(sp).map(pd -> pd.getEquippedId("pets")).orElse(null);
+        Entity current = ACTIVE_PETS.get(sp.getUUID());
+
+        if (!shouldSpawnRealPet(desired)) {
+            if (current != null && !current.isRemoved()) despawnPet(sp.getUUID(), sp);
+            return;
+        }
+        if (current == null || current.isRemoved() || !isCorrectPetType(current, desired)) {
+            updatePlayerPet(sp);
+            return;
+        }
+        applyCosmeticSafety(current);
+        applySavedStyle(sp, current);
+    }
+
+    @SubscribeEvent
+    public static void onEntityJoin(EntityJoinLevelEvent e) {
+        if (e.getLevel().isClientSide()) return;
+        Entity ent = e.getEntity();
+        if (isCosmeticPet(ent)) applyCosmeticSafety(ent);
+    }
+
+    // No damage IN or OUT.
+    @SubscribeEvent
+    public static void onLivingAttack(LivingAttackEvent e) {
+        if (isCosmeticPet(e.getEntity())) { e.setCanceled(true); return; }
+        Entity src = e.getSource().getEntity();
+        if (src != null && isCosmeticPet(src)) e.setCanceled(true);
+    }
+    @SubscribeEvent
+    public static void onLivingHurt(LivingHurtEvent e) {
+        if (isCosmeticPet(e.getEntity())) { e.setCanceled(true); return; }
+        Entity src = e.getSource().getEntity();
+        if (src != null && isCosmeticPet(src)) e.setCanceled(true);
+    }
+    @SubscribeEvent
+    public static void onLivingDamage(LivingDamageEvent e) {
+        if (isCosmeticPet(e.getEntity())) e.setCanceled(true);
+    }
+
+    // Block item interactions (shears/bucket/etc.) on cosmetic pets; allow empty-hand “petting”.
+    @SubscribeEvent
+    public static void onRightClickEntity(PlayerInteractEvent.EntityInteract e) {
+        if (!(e.getTarget() instanceof LivingEntity target)) return;
+        if (!isCosmeticPet(target)) return;
+
+        if (!e.getEntity().getItemInHand(e.getHand()).isEmpty()) {
+            if (shouldThrottleInteraction(target)) {
+                e.setCancellationResult(InteractionResult.FAIL);
+                e.setCanceled(true);
+                return;
+            }
+            e.setCancellationResult(InteractionResult.FAIL);
+            e.setCanceled(true);
+        }
+    }
+
+    @SubscribeEvent
+    public static void onServerTick(TickEvent.ServerTickEvent e) {
+        if (e.phase != TickEvent.Phase.END) return;
+        for (Entity ent : ACTIVE_PETS.values()) {
+            if (!(ent instanceof LivingEntity le) || le.isRemoved()) continue;
+
+            if (le instanceof Blaze && le.isInWaterOrRain()) {
+                le.setHealth(le.getMaxHealth());
+                le.clearFire();
+            }
+            if (ent.tickCount % 40 == 0 && ent instanceof Mob mob) {
+                stripCombatGoals(mob);
+            }
+        }
+    }
+
+    /* ====================================================================== */
+    /* Style resolution                                                        */
+    /* ====================================================================== */
+
+    private static void applySavedStyle(ServerPlayer owner, Entity pet) {
+        boolean random = isRandomOn(owner);
+
+if (random) {
+    // Scrub any persisted explicit dye so relog/equip can’t revert to a specific color
+    CompoundTag proot = getPlayerCoslite(owner, true);
+    if (proot.contains(PNBT_PET_DYE)) {
+        proot.remove(PNBT_PET_DYE);
+    }
+
+    // If the entity already has a random roll locked in ENBT, keep it (don’t re-roll each tick)
+    CompoundTag etag = pet.getPersistentData().getCompound("coslite"); // ENBT_ROOT
+    if (etag.contains("dye")) {                                       // ENBT_DYE
+        proot.putBoolean(PNBT_PET_RANDOM, true);
+        owner.getPersistentData().put(PNBT_ROOT, proot);
+        return; // keep current random color until next spawn/equip
+    }
+
+    // Roll ONCE now (try to differ from last-random and current live)
+    DyeColor live = getEntityLiveDye(pet);
+    String lastName = proot.getString(PNBT_LAST_RANDOM_DYE);
+    DyeColor[] all = DyeColor.values();
+    DyeColor pick = all[owner.level().random.nextInt(all.length)];
+    for (int i = 0; i < 8; i++) {
+        boolean differsFromLast = (lastName == null || lastName.isEmpty())
+                || !pick.getName().equalsIgnoreCase(lastName);
+        boolean differsFromLive = (live == null) || (pick != live);
+        if (differsFromLast && differsFromLive) break;
+        pick = all[owner.level().random.nextInt(all.length)];
+    }
+
+    // Apply and LOCK this roll on the entity so subsequent calls don’t change it
+    applyDyeToPet(pet, pick);
+    putEntityDyeNBT(pet, pick);                // writes coslite.dye into entity ENBT
+
+    // Mirror flags (no explicit PNBT dye while Random is ON)
+    proot.putString(PNBT_LAST_RANDOM_DYE, pick.getName());
+    proot.putBoolean(PNBT_PET_RANDOM, true);
+    owner.getPersistentData().put(PNBT_ROOT, proot);
+    return;
+}
+
+
+        // Random OFF: prefer PD -> PNBT -> live ; NEVER inject WHITE.
+        Optional<DyeColor> pdDye = tryResolveDyeFromPlayerData(owner);
+        DyeColor pdChosen = pdDye.orElse(null);
+
+        DyeColor saved = getPlayerDye(owner);
+        if (saved == DyeColor.WHITE) saved = null;   // ignore any old WHITE entries
+        DyeColor live  = getEntityLiveDye(pet);      // may reflect a just-received packet
+
+        // If PD didn't specify and live differs from PNBT, persist live now — but NEVER persist WHITE
+        if (!pdDye.isPresent() && live != null && live != DyeColor.WHITE && (saved == null || saved != live)) {
+            putPlayerDye(owner, live);
+            saved = live;
+        }
+
+        DyeColor chosen = (pdChosen != null) ? pdChosen : (saved != null ? saved : live);
+        if (chosen == null) {
+            putPlayerRandom(owner, false);
+            return;
+        }
+
+        applyDyeToPet(pet, chosen);
+        putEntityDyeNBT(pet, chosen);
+
+        if (pdDye.isPresent() || saved != null) {
+            putPlayerDye(owner, chosen);
+        }
+        putPlayerRandom(owner, false);
+
+        // Clear last-random since we’re in explicit mode
+        CompoundTag root = getPlayerCoslite(owner, true);
+        if (root.contains(PNBT_LAST_RANDOM_DYE)) {
+            root.remove(PNBT_LAST_RANDOM_DYE);
+            owner.getPersistentData().put(PNBT_ROOT, root);
+        }
+    }
+
+    /** On despawn/log out with Random OFF, capture the live style. */
+    private static void captureStyleToPlayer(ServerPlayer owner, Entity pet) {
+        DyeColor live = getEntityLiveDye(pet);
+        if (live != null && live != DyeColor.WHITE) putPlayerDye(owner, live);
+        Integer liveVar = getEntityLiveVariant(pet);
+        if (liveVar != null) putPlayerVariant(owner, liveVar);
+    }
+
+    /* ------------------------- Random toggle helpers ----------------------- */
+
+    private static boolean isRandomOn(ServerPlayer owner) {
+        // Random is ON if *either* PD or PNBT says true
+        boolean pd = tryResolveRandomFromPlayerData(owner).orElse(false);
+        CompoundTag root = getPlayerCoslite(owner, false);
+        boolean pnbt = root != null && root.getBoolean(PNBT_PET_RANDOM);
+        return pd || pnbt;
+    }
+
+    private static Optional<Boolean> tryResolveRandomFromPlayerData(ServerPlayer owner) {
+        return PlayerData.get(owner).flatMap(pd -> {
+            // 1) Boolean-style getters that may exist in PlayerData
+            for (String name : new String[]{
+                    "isPetColorRandom", "isRandomPetColor", "isPetRandom", "isRandom"
+            }) {
+                try {
+                    Method m = pd.getClass().getMethod(name);
+                    Object v = m.invoke(pd);
+                    if (v instanceof Boolean b) return Optional.of(b);
+                } catch (Exception ignored) {}
+            }
+            // 2) String-style color getter equal to "random"
+            for (String name : new String[]{
+                    "getPetColor", "getSelectedPetColor", "getPetColorName"
+            }) {
+                try {
+                    Method m = pd.getClass().getMethod(name);
+                    Object v = m.invoke(pd);
+                    if (v instanceof String s) {
+                        if ("random".equalsIgnoreCase(s) || "rnd".equalsIgnoreCase(s)) {
+                            return Optional.of(true);
+                        }
+                    }
+                } catch (Exception ignored) {}
+            }
+            return Optional.empty();
+        });
+    }
+
+    private static void putPlayerRandom(ServerPlayer p, boolean on) {
+        CompoundTag root = getPlayerCoslite(p, true);
+        root.putBoolean(PNBT_PET_RANDOM, on);
+        p.getPersistentData().put(PNBT_ROOT, root);
+    }
+
+    /* ----------------------- dye/variant helpers --------------------------- */
+
+    private static DyeColor getEntityLiveDye(Entity pet) {
+        if (pet instanceof Sheep s) return s.getColor();
+        if (pet instanceof Wolf  w) return w.getCollarColor();
+        return null;
+    }
+    private static Integer getEntityLiveVariant(Entity pet) {
+        try {
+            var m = pet.getClass().getMethod("getVariant");
+            Object v = m.invoke(pet);
+            if (v instanceof Number n) return n.intValue();
+        } catch (Exception ignored) {}
+        return null;
+    }
+
+    private static Optional<DyeColor> tryResolveDyeFromPlayerData(ServerPlayer owner) {
+        return PlayerData.get(owner).flatMap(pd -> {
+            for (String name : new String[]{"getPetColorDye", "getSelectedPetColor", "getPetColor"}) {
+                try {
+                    Method m = pd.getClass().getMethod(name);
+                    Object v = m.invoke(pd);
+                    if (v instanceof DyeColor dye) return Optional.of(dye);
+                    if (v instanceof String s && !s.isBlank())
+                        return Optional.ofNullable(DyeColor.byName(s.toLowerCase(Locale.ROOT), null));
+                } catch (Exception ignored) {}
+            }
+            return Optional.empty();
+        });
+    }
+
+    private static void putPlayerDye(ServerPlayer p, DyeColor dye) {
+        CompoundTag root = getPlayerCoslite(p, true);
+        root.putString(PNBT_PET_DYE, dye.getName());
+        p.getPersistentData().put(PNBT_ROOT, root);
+    }
+    private static DyeColor getPlayerDye(ServerPlayer p) {
+        CompoundTag root = getPlayerCoslite(p, false);
+        if (root == null || !root.contains(PNBT_PET_DYE)) return null;
+        return DyeColor.byName(root.getString(PNBT_PET_DYE), null);
+    }
+
+    private static void putPlayerVariant(ServerPlayer p, int variant) {
+        CompoundTag root = getPlayerCoslite(p, true);
+        root.putInt(PNBT_PET_VAR, variant);
+        p.getPersistentData().put(PNBT_ROOT, root);
+    }
+
+    private static boolean applyDyeToPet(Entity pet, DyeColor dye) {
+        if (pet instanceof Sheep s) { s.setColor(dye); putEntityDyeNBT(pet, dye); return true; }
+        if (pet instanceof Wolf  w) { w.setCollarColor(dye); putEntityDyeNBT(pet, dye); return true; }
+        return false;
+    }
+
+    private static void putEntityDyeNBT(Entity pet, DyeColor dye) {
+        CompoundTag tag = pet.getPersistentData().getCompound(ENBT_ROOT);
+        tag.putString(ENBT_DYE, dye.getName());
+        pet.getPersistentData().put(ENBT_ROOT, tag);
+    }
+
+    private static CompoundTag getPlayerCoslite(ServerPlayer p, boolean create) {
+        CompoundTag root = p.getPersistentData().getCompound(PNBT_ROOT);
+        if (root.isEmpty() && create) {
+            root = new CompoundTag();
+            p.getPersistentData().put(PNBT_ROOT, root);
+        }
+        return root.isEmpty() ? (create ? root : null) : root;
+    }
+
+    /* ====================================================================== */
+    /* Safety / Interaction                                                   */
+    /* ====================================================================== */
+
+    private static void applyCosmeticSafety(Entity e) {
+        if (e instanceof LivingEntity le) {
+            le.setInvulnerable(true);
+            le.setRemainingFireTicks(0);
+            if (le instanceof Blaze && le.isInWaterOrRain()) {
+                le.setHealth(le.getMaxHealth());
+                le.clearFire();
+            }
+        }
+        if (e instanceof Mob mob) {
+            mob.setPersistenceRequired();
+            stripCombatGoals(mob);
+        }
+    }
+
+    private static void stripCombatGoals(Mob mob) {
+        try {
+            var goals = new ArrayList<>(mob.goalSelector.getAvailableGoals());
+            for (var w : goals) {
+                var g = w.getGoal();
+                String n = g.getClass().getName();
+                if (n.contains("MeleeAttack") || n.contains("Ranged") || n.contains("Shoot")
+                        || n.contains("Projectile") || n.contains("LeapAt") || n.contains("Charge")) {
+                    mob.goalSelector.removeGoal(g);
+                }
+            }
+            var targets = new ArrayList<>(mob.targetSelector.getAvailableGoals());
+            for (var w : targets) {
+                var g = w.getGoal();
+                String n = g.getClass().getName();
+                if (n.contains("NearestAttackableTarget") || n.contains("HurtByTarget") || n.contains("ResetUniversalAnger")) {
+                    mob.targetSelector.removeGoal(g);
+                }
+            }
+            if (mob instanceof IronGolem) {
+                var goals2 = new ArrayList<>(mob.goalSelector.getAvailableGoals());
+                for (var w2 : goals2) {
+                    var g = w2.getGoal();
+                    String n = g.getClass().getName();
+                    if (n.contains("MeleeAttack") || n.contains("MoveToTarget") || n.contains("DefendVillage")) {
+                        mob.goalSelector.removeGoal(g);
+                    }
+                }
+                var targets2 = new ArrayList<>(mob.targetSelector.getAvailableGoals());
+                for (var w2 : targets2) {
+                    var g = w2.getGoal();
+                    String n = g.getClass().getName();
+                    if (n.contains("NearestAttackableTarget") || n.contains("HurtByTarget") || n.contains("DefendVillage")) {
+                        mob.targetSelector.removeGoal(g);
+                    }
+                }
+            }
+        } catch (Throwable t) {
+            LOGGER.warn("[PetManager] stripCombatGoals failed on {}: {}", mob.getClass().getSimpleName(), t.toString());
+        }
+    }
+
+    private static boolean shouldThrottleInteraction(LivingEntity target) {
+        CompoundTag tag = target.getPersistentData().getCompound(ENBT_ROOT);
+        int last = tag.getInt(ENBT_LAST_INTERACT_TICK);
+        int now  = target.tickCount;
+        if (now - last < INTERACT_COOLDOWN_TICKS) return true;
+        tag.putInt(ENBT_LAST_INTERACT_TICK, now);
+        target.getPersistentData().put(ENBT_ROOT, tag);
+        return false;
+    }
+
+    private static void tagOwner(Entity e, ServerPlayer owner) {
+        CompoundTag tag = e.getPersistentData().getCompound(ENBT_ROOT);
+        tag.putUUID(ENBT_OWNER, owner.getUUID());
+        e.getPersistentData().put(ENBT_ROOT, tag);
+    }
+
+    private static boolean isCosmeticPet(Entity e) {
+        if (e == null) return false;
+        if (ACTIVE_PETS.containsValue(e)) return true;
+        CompoundTag tag = e.getPersistentData().getCompound(ENBT_ROOT);
+        if (tag.hasUUID(ENBT_OWNER)) return true;
+        return e.getClass().getSimpleName().startsWith("CosmeticPet");
+    }
+
+    /* ====================================================================== */
+    /* Registry / Helpers                                                     */
+    /* ====================================================================== */
+
     private static Entity createPetEntity(ServerLevel level, ResourceLocation petId) {
         String id = petId.toString();
 
@@ -175,59 +643,23 @@ public class PetManager {
     }
 
     private static Vec3 findSafeSpawnPosition(ServerLevel level, Vec3 playerPos) {
-        for (int attempts = 0; attempts < 10; attempts++) {
-            double angle = Math.random() * Math.PI * 2;
-            double distance = 2.0 + Math.random() * 2.0;
-            double x = playerPos.x + Math.cos(angle) * distance;
-            double z = playerPos.z + Math.sin(angle) * distance;
-            double y = playerPos.y;
-
-            for (int yOffset = -3; yOffset <= 3; yOffset++) {
-                Vec3 testPos = new Vec3(x, y + yOffset, z);
-                if (isPositionSafe(level, testPos)) {
-                    return testPos;
-                }
-            }
+        for (int r = 0; r < 6; r++) {
+            double a  = (r * 57.2958) % 360.0;
+            double dx = Mth.cos((float)Math.toRadians(a)) * (1.75 + 0.25 * r);
+            double dz = Mth.sin((float)Math.toRadians(a)) * (1.75 + 0.25 * r);
+            Vec3 pos  = new Vec3(playerPos.x + dx, playerPos.y, playerPos.z + dz);
+            if (isPositionSafe(level, pos)) return pos;
         }
-        LOGGER.warn("[PetManager] Could not find safe spawn position, defaulting to player position");
         return playerPos;
     }
 
     private static boolean isPositionSafe(ServerLevel level, Vec3 pos) {
-        var blockPos = new net.minecraft.core.BlockPos((int) pos.x, (int) pos.y, (int) pos.z);
-        if (!level.getBlockState(blockPos.below()).isSolidRender(level, blockPos.below())) return false;
-        if (!level.getBlockState(blockPos).isAir()) return false;
-        if (!level.getBlockState(blockPos.above()).isAir()) return false;
-        return true;
-    }
-
-    public static void despawnPet(UUID playerId) {
-        Entity pet = ACTIVE_PETS.remove(playerId);
-        if (pet != null && !pet.isRemoved()) {
-            LOGGER.debug("[PetManager] Despawning {} for {}", pet.getClass().getSimpleName(), playerId);
-            pet.discard();
-        }
-    }
-
-    public static void despawnAllPets() {
-        LOGGER.info("[PetManager] Despawning all pets ({} active)", ACTIVE_PETS.size());
-        for (Entity pet : ACTIVE_PETS.values()) {
-            if (pet != null && !pet.isRemoved()) {
-                pet.discard();
-            }
-        }
-        ACTIVE_PETS.clear();
-    }
-
-    public static void cleanupPlayer(UUID playerId) {
-        LOGGER.debug("[PetManager] Cleaning up pets for {}", playerId);
-        despawnPet(playerId);
+        BlockPos bp = BlockPos.containing(pos);
+        return level.isEmptyBlock(bp) && level.isEmptyBlock(bp.above());
     }
 
     private static boolean shouldSpawnRealPet(ResourceLocation petId) {
-        if (petId == null) return false;
-        String s = petId.toString();
-        return s.startsWith("cosmeticslite:pet_");
+        return petId != null && petId.toString().startsWith(CosmeticsLite.MODID + ":pet_");
     }
 
     private static boolean isCorrectPetType(Entity currentPet, ResourceLocation desiredPetId) {
@@ -259,9 +691,5 @@ public class PetManager {
             || (s.endsWith("blaze")      && currentPet instanceof CosmeticPetBlaze)
             || (s.endsWith("snow_golem") && currentPet instanceof CosmeticPetSnowGolem)
             || (s.endsWith("iron_golem") && currentPet instanceof CosmeticPetIronGolem);
-    }
-
-    public static Entity getActivePet(ServerPlayer player) {
-        return ACTIVE_PETS.get(player.getUUID());
     }
 }
