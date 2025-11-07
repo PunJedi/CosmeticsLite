@@ -248,7 +248,7 @@ private VariantDropdownWidget createVariantDropdown(int x, int y, int w) {
                     }
 
                     // send to server
-                    CosmeticsLite.NETWORK.sendToServer(new PacketSetPetVariant(choice.key));
+                    CosmeticsLite.NETWORK.sendToServer(new PacketSetPetVariant(choice.key, false));
                 } else {
                     setStatus("Variant: none");
                 }
