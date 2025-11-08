@@ -15,7 +15,7 @@ import com.pastlands.cosmeticslite.network.PacketSetPetVariant;
 import com.pastlands.cosmeticslite.preview.MannequinPane;
 import com.pastlands.cosmeticslite.preview.ParticlePreviewPane;
 import com.pastlands.cosmeticslite.gadget.GadgetClientCommands;
-
+import net.minecraft.nbt.CompoundTag;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.components.Button;
@@ -248,7 +248,7 @@ private VariantDropdownWidget createVariantDropdown(int x, int y, int w) {
                     }
 
                     // send to server
-                    CosmeticsLite.NETWORK.sendToServer(new PacketSetPetVariant(choice.key));
+                    CosmeticsLite.NETWORK.sendToServer(new PacketSetPetVariant(choice.key, false));
                 } else {
                     setStatus("Variant: none");
                 }
@@ -683,12 +683,17 @@ private void onEquipClicked() {
 
     // If something else is equipped, unequip it first automatically
     if (!isAir(currentId) && !currentId.equals(newId)) {
-        PacketEquipRequest.send(type, ResourceLocation.fromNamespaceAndPath("minecraft", "air"));
+        PacketEquipRequest.send(
+    type,
+    ResourceLocation.fromNamespaceAndPath("minecraft", "air"),
+    -1, -1,
+    new CompoundTag()
+);
         ClientState.setEquippedId(type, ResourceLocation.fromNamespaceAndPath("minecraft", "air"));
     }
 
     // Equip the new cosmetic
-    PacketEquipRequest.send(type, newId);
+    PacketEquipRequest.send(type, newId, -1, -1, new CompoundTag());
     ClientState.setEquippedId(type, newId);
 
     state.clearAllHighlights();
@@ -728,7 +733,7 @@ private void onUnequipThisTab() {
     String type = state.getActiveType();
     ResourceLocation air = ResourceLocation.fromNamespaceAndPath("minecraft", "air");
 
-    PacketEquipRequest.send(type, air);
+    PacketEquipRequest.send(type, air, -1, -1, new CompoundTag());
     ClientState.setEquippedId(type, air);
 
     state.clearSelection(type);
@@ -749,7 +754,7 @@ private void onUnequipThisTab() {
         ResourceLocation air = ResourceLocation.fromNamespaceAndPath("minecraft", "air");
 
         // Send one packet to clear everything
-        PacketEquipRequest.send(air);
+        PacketEquipRequest.sendClearAll(air);
         ClientState.clearAll();
 
         state.clearAllHighlights();

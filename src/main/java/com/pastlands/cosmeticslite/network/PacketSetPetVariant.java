@@ -2,9 +2,9 @@
 package com.pastlands.cosmeticslite.network;
 
 import com.mojang.logging.LogUtils;
-import com.pastlands.cosmeticslite.PlayerData;
-import com.pastlands.cosmeticslite.entity.CosmeticPetParrot;
 import com.pastlands.cosmeticslite.entity.PetManager;
+import com.pastlands.cosmeticslite.entity.CosmeticPetParrot;
+import com.pastlands.cosmeticslite.PlayerData;
 import net.minecraft.core.Holder;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.core.registries.Registries;
@@ -16,235 +16,251 @@ import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.animal.*;
 import net.minecraft.world.entity.animal.frog.Frog;
-import net.minecraft.world.entity.animal.FrogVariant; // Mojmaps 1.20.1
+import net.minecraft.world.entity.animal.FrogVariant;
 import net.minecraft.world.entity.animal.horse.Horse;
 import net.minecraft.world.entity.animal.horse.Llama;
 import net.minecraft.world.entity.animal.horse.Variant;
-import net.minecraft.world.entity.npc.Villager;
 import net.minecraft.world.entity.npc.VillagerType;
+import net.minecraft.world.entity.npc.Villager;
 import net.minecraftforge.network.NetworkEvent;
 import org.slf4j.Logger;
 
-import java.lang.reflect.Method;
 import java.util.Locale;
 import java.util.Optional;
+import java.util.Random;
 import java.util.function.Supplier;
 
 /**
  * Client → Server: choose which variant the cosmetic pet should use.
- * Parrot (custom), Cat (registry), Rabbit (enum), Llama (enum),
- * Frog (FrogVariant registry), Mooshroom (enum), Fox (Type), Horse (Variant/Markings),
- * Villager (VillagerType registry).
+ * Mirrors the Random/Explicit logic used for pet color.
  *
- * Random-safety:
- *  - If Random is ON (from PlayerData or PNBT), ignore this packet and scrub PNBT "pet_variant".
- *  - If Random is OFF, apply and persist PNBT "pet_variant", and set PNBT "pet_random" = false.
+ * Behavior:
+ *  - random==true: enable PNBT pet_random, scrub PNBT pet_variant, clear entity lock; let PetManager roll.
+ *  - random==false: disable PNBT pet_random, persist PNBT pet_variant, clear entity lock; apply immediately.
  *
  * Forge 47.4.0 • MC 1.20.1 • Mojmaps
  */
 public class PacketSetPetVariant {
     private static final Logger LOGGER = LogUtils.getLogger();
+    private static final Random RNG = new Random();
 
     // PNBT keys (must match PetManager)
-    private static final String PNBT_ROOT        = "coslite";
-    private static final String PNBT_PET_RANDOM  = "pet_random";
-    private static final String PNBT_PET_VARIANT = "pet_variant";
+    private static final String PNBT_ROOT       = "coslite";
+    private static final String PNBT_PET_VAR    = "pet_variant";
+    private static final String PNBT_PET_RANDOM = "pet_random";
 
-    private final String variantKey; // e.g. "red", "tabby", "salt_and_pepper", "temperate", "brown", ...
+    private final String variantKey; // e.g. "tabby", "temperate", "brown", "creamy"...
+    private final boolean random;
 
-    public PacketSetPetVariant(String variantKey) {
+    public PacketSetPetVariant(String variantKey, boolean random) {
         this.variantKey = variantKey;
+        this.random = random;
     }
 
-    // ---------------- Encoding / Decoding ----------------
+    // ------------- codec -------------
     public static void encode(PacketSetPetVariant msg, FriendlyByteBuf buf) {
         buf.writeUtf(msg.variantKey);
+        buf.writeBoolean(msg.random);
     }
 
     public static PacketSetPetVariant decode(FriendlyByteBuf buf) {
-        return new PacketSetPetVariant(buf.readUtf());
+        return new PacketSetPetVariant(buf.readUtf(), buf.readBoolean());
     }
 
-    // ---------------- Handling ----------------
+    // ------------- handler -------------
     public static void handle(PacketSetPetVariant msg, Supplier<NetworkEvent.Context> ctx) {
         ctx.get().enqueueWork(() -> {
             ServerPlayer player = ctx.get().getSender();
-            if (player == null) return;
+if (player == null) return;
 
-            LOGGER.info("[CosmeticsLite] Received pet variant update from {}: variant={}",
-                    player.getGameProfile().getName(), msg.variantKey);
+// ✅ 1) Update PlayerData.styles["pets"] so re-equip/relog persists
+PlayerData.get(player).ifPresent(pd -> {
+    CompoundTag style = pd.getEquippedStyleTag(PlayerData.TYPE_PETS);
+    if (style == null) style = new CompoundTag();
 
-            // Respect Random mode: if ON, ignore variant packets and scrub sticky variant
-            if (isRandomOn(player)) {
-                scrubExplicitVariant(player);
-                PetManager.updatePlayerPet(player);
-                return;
-            }
+    if (msg.random) {
+        // RANDOM ON → clear saved variant keys (let PetManager roll on spawn)
+        style.remove("variant");
+        style.remove("villager_type");
+        style.remove("villager_profession");
+        style.remove("villager_level");
+        pd.setEquippedVariant(PlayerData.TYPE_PETS, -1);
+        pd.setEquippedStyleTag(PlayerData.TYPE_PETS, style);
+    } else {
+        // EXPLICIT variant → persist the key
+        style.putString("variant", msg.variantKey.toLowerCase(Locale.ROOT));
+        // (Villager ordinals are handled by PetManager when present; we leave them if previously set.)
+        pd.setEquippedStyleTag(PlayerData.TYPE_PETS, style);
+    }
+});
 
-            // Locate the player's active cosmetic pet
-            Entity pet = PetManager.getActivePet(player);
-            if (pet == null) {
-                LOGGER.debug("[CosmeticsLite] No active pet for {}, ignoring variant packet.",
-                        player.getGameProfile().getName());
-                return;
-            }
+// ✅ 2) Keep your existing PNBT flow for legacy/back-compat (optional)
+// (You can keep or remove this block. Keeping is fine.)
+Entity pet = PetManager.getActivePet(player); // may be null if not spawned yet
+if (msg.random) {
+    setRandom(player, true);
+    scrubExplicitVariant(player);
+    clearEntityVariantLock(pet);
+    PetManager.updatePlayerPet(player);
+    return;
+}
 
-            boolean applied = false;
+// EXPLICIT VARIANT — disable Random, mirror PNBT, clear lock, apply immediately
+setRandom(player, false);
+persistExplicitVariant(player, msg.variantKey);
+clearEntityVariantLock(pet);
+applyVariantToActivePet(player, msg.variantKey);
 
-            // 🦜 Parrot (custom cosmetic entity)
-            if (pet instanceof CosmeticPetParrot parrot) {
-                parrot.setVariantByKey(msg.getVariantKey());
-                applied = true;
-            }
-            // 🦊 Fox: RED / SNOW
-            else if (pet instanceof Fox fox) {
-                Fox.Type type = switch (msg.getVariantKey().toLowerCase(Locale.ROOT)) {
-                    case "snow", "white" -> Fox.Type.SNOW;
-                    case "red", "default" -> Fox.Type.RED;
-                    default -> null;
-                };
-                if (type != null) { fox.setVariant(type); applied = true; }
-            }
-            // 🐱 Cat (registry-backed)
-            else if (pet instanceof Cat cat) {
-                ResourceLocation rl = parseVariantLocation(msg.variantKey);
-                ResourceKey<CatVariant> key = ResourceKey.create(Registries.CAT_VARIANT, rl);
-                Optional<Holder.Reference<CatVariant>> holder = BuiltInRegistries.CAT_VARIANT.getHolder(key);
-                if (holder.isPresent()) { cat.setVariant(holder.get().value()); applied = true; }
-            }
-            // 🐇 Rabbit (enum; no 'TOAST' constant — that skin is name-based)
-            else if (pet instanceof Rabbit rabbit) {
-                Rabbit.Variant v = switch (msg.variantKey.toLowerCase(Locale.ROOT)) {
-                    case "brown"            -> Rabbit.Variant.BROWN;
-                    case "white"            -> Rabbit.Variant.WHITE;
-                    case "black"            -> Rabbit.Variant.BLACK;
-                    case "gold"             -> Rabbit.Variant.GOLD;
-                    case "salt_and_pepper"  -> Rabbit.Variant.SALT;
-                    default -> null;
-                };
-                if (v != null) { rabbit.setVariant(v); applied = true; }
-            }
-            // 🦙 Llama (enum)
-            else if (pet instanceof Llama llama) {
-                Llama.Variant v = switch (msg.variantKey.toLowerCase(Locale.ROOT)) {
-                    case "creamy" -> Llama.Variant.CREAMY;
-                    case "white"  -> Llama.Variant.WHITE;
-                    case "brown"  -> Llama.Variant.BROWN;
-                    case "gray"   -> Llama.Variant.GRAY;
-                    default -> null;
-                };
-                if (v != null) { llama.setVariant(v); applied = true; }
-            }
-            // 🐴 Horse: coat color only (1.20.1)
-            else if (pet instanceof Horse horse) {
-                Variant colorEnum = switch (msg.getVariantKey().toLowerCase(Locale.ROOT)) {
-                    case "white"      -> Variant.WHITE;
-                    case "creamy"     -> Variant.CREAMY;
-                    case "chestnut"   -> Variant.CHESTNUT;
-                    case "brown"      -> Variant.BROWN;
-                    case "black"      -> Variant.BLACK;
-                    case "gray"       -> Variant.GRAY;
-                    case "dark_brown", "darkbrown", "dark-brown" -> Variant.DARK_BROWN;
-                    default -> null;
-                };
-                if (colorEnum != null) { horse.setVariant(colorEnum); applied = true; }
-            }
-            // 🐸 Frog (registry-backed FrogVariant in 1.20.1)
-            else if (pet instanceof Frog frog) {
-                ResourceLocation rl = parseVariantLocation(msg.getVariantKey()); // "temperate" | "warm" | "cold"
-                ResourceKey<FrogVariant> key = ResourceKey.create(Registries.FROG_VARIANT, rl);
-                Optional<Holder.Reference<FrogVariant>> holder = BuiltInRegistries.FROG_VARIANT.getHolder(key);
-                if (holder.isPresent()) { frog.setVariant(holder.get().value()); applied = true; }
-            }
-            // 👨 Villager (registry-backed VillagerType)
-            else if (pet instanceof Villager villager) {
-                ResourceLocation rl = parseVariantLocation(msg.getVariantKey());
-                ResourceKey<VillagerType> key = ResourceKey.create(Registries.VILLAGER_TYPE, rl);
-                Optional<Holder.Reference<VillagerType>> holder = BuiltInRegistries.VILLAGER_TYPE.getHolder(key);
-                if (holder.isPresent()) {
-                    villager.setVillagerData(villager.getVillagerData().setType(holder.get().value()));
-                    applied = true;
-                }
-            }
-            // 🍄 Mooshroom (enum)
-            else if (pet instanceof MushroomCow cow) {
-                MushroomCow.MushroomType t = switch (msg.variantKey.toLowerCase(Locale.ROOT)) {
-                    case "red"   -> MushroomCow.MushroomType.RED;
-                    case "brown" -> MushroomCow.MushroomType.BROWN;
-                    default -> null;
-                };
-                if (t != null) { cow.setVariant(t); applied = true; }
-            }
+// ✅ 3) Ensure a final refresh so PetManager reapplies saved style on the live pet
+PetManager.updatePlayerPet(player);
 
-            if (applied) {
-                persistExplicitVariant(player, msg.variantKey);
-                LOGGER.info("[CosmeticsLite] Applied variant '{}' to {}'s pet (Random OFF).",
-                        msg.getVariantKey(), player.getGameProfile().getName());
-            } else {
-                LOGGER.warn("[CosmeticsLite] Variant '{}' not handled for active pet type {}",
-                        msg.getVariantKey(), (pet != null ? pet.getClass().getName() : "null"));
-            }
         });
         ctx.get().setPacketHandled(true);
     }
 
-    private static ResourceLocation parseVariantLocation(String key) {
-        // Accept bare keys (e.g., "tabby") or namespaced (e.g., "minecraft:tabby")
+    // ------------- PNBT helpers -------------
+    private static void setRandom(ServerPlayer p, boolean on) {
+        CompoundTag root = p.getPersistentData().getCompound(PNBT_ROOT);
+        if (root.isEmpty()) root = new CompoundTag();
+        root.putBoolean(PNBT_PET_RANDOM, on);
+        p.getPersistentData().put(PNBT_ROOT, root);
+    }
+
+    private static void scrubExplicitVariant(ServerPlayer p) {
+        CompoundTag root = p.getPersistentData().getCompound(PNBT_ROOT);
+        if (!root.isEmpty() && root.contains(PNBT_PET_VAR)) {
+            root.remove(PNBT_PET_VAR);
+            p.getPersistentData().put(PNBT_ROOT, root);
+        }
+    }
+
+    private static void persistExplicitVariant(ServerPlayer p, String key) {
+        CompoundTag root = p.getPersistentData().getCompound(PNBT_ROOT);
+        if (root.isEmpty()) root = new CompoundTag();
+        root.putString(PNBT_PET_VAR, key);
+        root.putBoolean(PNBT_PET_RANDOM, false);
+        p.getPersistentData().put(PNBT_ROOT, root);
+    }
+
+    private static void clearEntityVariantLock(Entity pet) {
+        if (pet == null) return;
+        CompoundTag etag = pet.getPersistentData().getCompound(PNBT_ROOT);
+        if (!etag.isEmpty() && etag.contains("variant")) {
+            etag.remove("variant");
+            pet.getPersistentData().put(PNBT_ROOT, etag);
+        }
+    }
+
+    // ------------- apply now -------------
+    private static void applyVariantToActivePet(ServerPlayer player, String key) {
+        Entity pet = PetManager.getActivePet(player);
+        if (pet == null) return;
+
+        // Parrot (custom cosmetic entity)
+        if (pet instanceof CosmeticPetParrot parrot) {
+            parrot.setVariantByKey(key);
+            return;
+        }
+
+        // Fox: RED / SNOW
+        if (pet instanceof Fox fox) {
+            Fox.Type type = switch (key.toLowerCase(Locale.ROOT)) {
+                case "snow", "white" -> Fox.Type.SNOW;
+                case "red", "default" -> Fox.Type.RED;
+                default -> null;
+            };
+            if (type != null) fox.setVariant(type);
+            return;
+        }
+
+        // Cat (registry)
+        if (pet instanceof Cat cat) {
+            ResourceLocation rl = parseRL(key);
+            ResourceKey<CatVariant> rkey = ResourceKey.create(Registries.CAT_VARIANT, rl);
+            Optional<Holder.Reference<CatVariant>> holder = BuiltInRegistries.CAT_VARIANT.getHolder(rkey);
+            holder.ifPresent(h -> cat.setVariant(h.value()));
+            return;
+        }
+
+        // Rabbit (enum) — note: no “toast” enum
+        if (pet instanceof Rabbit rabbit) {
+            Rabbit.Variant v = switch (key.toLowerCase(Locale.ROOT)) {
+                case "brown" -> Rabbit.Variant.BROWN;
+                case "white" -> Rabbit.Variant.WHITE;
+                case "black" -> Rabbit.Variant.BLACK;
+                case "gold" -> Rabbit.Variant.GOLD;
+                case "salt_and_pepper", "salt" -> Rabbit.Variant.SALT;
+                default -> null;
+            };
+            if (v != null) rabbit.setVariant(v);
+            return;
+        }
+
+        // Llama (enum)
+        if (pet instanceof Llama llama) {
+            Llama.Variant v = switch (key.toLowerCase(Locale.ROOT)) {
+                case "creamy" -> Llama.Variant.CREAMY;
+                case "white"  -> Llama.Variant.WHITE;
+                case "brown"  -> Llama.Variant.BROWN;
+                case "gray"   -> Llama.Variant.GRAY;
+                default -> null;
+            };
+            if (v != null) llama.setVariant(v);
+            return;
+        }
+
+        // Horse: coat color only
+        if (pet instanceof Horse horse) {
+            Variant color = switch (key.toLowerCase(Locale.ROOT)) {
+                case "white" -> Variant.WHITE;
+                case "creamy" -> Variant.CREAMY;
+                case "chestnut" -> Variant.CHESTNUT;
+                case "brown" -> Variant.BROWN;
+                case "black" -> Variant.BLACK;
+                case "gray" -> Variant.GRAY;
+                case "dark_brown", "darkbrown", "dark-brown" -> Variant.DARK_BROWN;
+                default -> null;
+            };
+            if (color != null) horse.setVariant(color);
+            return;
+        }
+
+        // Frog (registry: temperate|warm|cold)
+        if (pet instanceof Frog frog) {
+            ResourceLocation rl = parseRL(key);
+            ResourceKey<FrogVariant> rkey = ResourceKey.create(Registries.FROG_VARIANT, rl);
+            Optional<Holder.Reference<FrogVariant>> holder = BuiltInRegistries.FROG_VARIANT.getHolder(rkey);
+            holder.ifPresent(h -> frog.setVariant(h.value()));
+            return;
+        }
+
+        // Villager (biome type)
+        if (pet instanceof Villager villager) {
+            ResourceLocation rl = parseRL(key);
+            ResourceKey<net.minecraft.world.entity.npc.VillagerType> rkey =
+        ResourceKey.create(Registries.VILLAGER_TYPE, rl);
+Optional<Holder.Reference<net.minecraft.world.entity.npc.VillagerType>> holder =
+        BuiltInRegistries.VILLAGER_TYPE.getHolder(rkey);
+            holder.ifPresent(h -> villager.setVillagerData(villager.getVillagerData().setType(h.value())));
+            return;
+        }
+
+        // Mooshroom (enum)
+        if (pet instanceof MushroomCow cow) {
+            MushroomCow.MushroomType t = switch (key.toLowerCase(Locale.ROOT)) {
+                case "red" -> MushroomCow.MushroomType.RED;
+                case "brown" -> MushroomCow.MushroomType.BROWN;
+                default -> null;
+            };
+            if (t != null) cow.setVariant(t);
+        }
+    }
+
+    private static ResourceLocation parseRL(String key) {
         ResourceLocation rl = ResourceLocation.tryParse(key);
         if (rl == null || rl.getNamespace().isEmpty()) {
             return ResourceLocation.fromNamespaceAndPath("minecraft", key);
         }
         return rl;
-    }
-
-    public String getVariantKey() {
-        return variantKey;
-    }
-
-    /* ===================== Random/PNBT helpers ===================== */
-
-    private static boolean isRandomOn(ServerPlayer player) {
-        // Try PlayerData first
-        Optional<Boolean> pd = PlayerData.get(player).flatMap(pdObj -> {
-            for (String name : new String[]{"isPetColorRandom", "isRandomPetColor", "isPetRandom", "isRandom"}) {
-                try {
-                    Method m = pdObj.getClass().getMethod(name);
-                    Object v = m.invoke(pdObj);
-                    if (v instanceof Boolean b) return Optional.of(b);
-                } catch (Exception ignored) {}
-            }
-            for (String name : new String[]{"getPetColor", "getSelectedPetColor", "getPetColorName"}) {
-                try {
-                    Method m = pdObj.getClass().getMethod(name);
-                    Object v = m.invoke(pdObj);
-                    if (v instanceof String s) {
-                        String ss = s.toLowerCase(Locale.ROOT);
-                        if ("random".equals(ss) || "rnd".equals(ss)) return Optional.of(true);
-                    }
-                } catch (Exception ignored) {}
-            }
-            return Optional.empty();
-        });
-        if (pd.isPresent()) return pd.get();
-
-        // Fallback to PNBT
-        CompoundTag root = player.getPersistentData().getCompound(PNBT_ROOT);
-        return !root.isEmpty() && root.getBoolean(PNBT_PET_RANDOM);
-    }
-
-    private static void scrubExplicitVariant(ServerPlayer player) {
-        CompoundTag root = player.getPersistentData().getCompound(PNBT_ROOT);
-        if (!root.isEmpty() && root.contains(PNBT_PET_VARIANT)) {
-            root.remove(PNBT_PET_VARIANT);
-            player.getPersistentData().put(PNBT_ROOT, root);
-        }
-    }
-
-    private static void persistExplicitVariant(ServerPlayer player, String variantKey) {
-        CompoundTag root = player.getPersistentData().getCompound(PNBT_ROOT);
-        if (root.isEmpty()) root = new CompoundTag();
-        root.putString(PNBT_PET_VARIANT, variantKey);
-        root.putBoolean(PNBT_PET_RANDOM, false); // explicit choice cancels random
-        player.getPersistentData().put(PNBT_ROOT, root);
     }
 }

@@ -16,6 +16,7 @@ import net.minecraft.network.chat.ClickEvent;
 import net.minecraft.network.chat.Component;
 import net.minecraft.network.chat.HoverEvent;
 import net.minecraft.network.chat.MutableComponent;
+import net.minecraft.nbt.CompoundTag;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.entity.player.Player;
 import net.minecraftforge.api.distmarker.Dist;
@@ -396,7 +397,7 @@ private static int sendUse(ResourceLocation id, boolean showNameToast) {
     public static void ensureEquippedBeforeUse(ResourceLocation id) {
         if (id == null) return;
         if (!Objects.equals(ClientState.getEquippedId("gadgets"), id)) {
-            PacketEquipRequest.send("gadgets", id);
+            PacketEquipRequest.send("gadgets", id, -1, -1, new CompoundTag());
             ClientState.setEquippedId("gadgets", id);
         }
     }
