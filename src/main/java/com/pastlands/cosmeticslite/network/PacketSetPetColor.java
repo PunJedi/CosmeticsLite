@@ -14,7 +14,6 @@ import net.minecraft.world.item.DyeColor;
 import net.minecraftforge.network.NetworkEvent;
 import org.slf4j.Logger;
 
-import java.util.Random;
 import java.util.function.Supplier;
 
 /**
@@ -24,15 +23,11 @@ import java.util.function.Supplier;
  *  - Random ON  : set PNBT "pet_random"=true, CLEAR PlayerData color for PETS (-1),
  *                 clear entity dye lock, then let PetManager restyle.
  *  - Random OFF : set PNBT "pet_random"=false, WRITE PlayerData color (ARGB),
- *                 clear entity dye lock, apply to active pet immediately, then update.
- *
- * Notes:
- *  - We no longer persist explicit dye to PNBT ("pet_dye"). PlayerData.styles is authoritative.
- *  - Immediate entity update keeps UX snappy; persistence guarantees re-equip/relog stability.
+ *                 also write species-aware EXTRA (e.g. sheep "wool"),
+ *                 clear entity dye lock, apply to active pet immediately, then refresh.
  */
 public class PacketSetPetColor {
     private static final Logger LOGGER = LogUtils.getLogger();
-    private static final Random RNG = new Random();
 
     // PNBT keys (must match PetManager legacy handling of the random toggle)
     private static final String PNBT_ROOT       = "coslite";
@@ -60,8 +55,9 @@ public class PacketSetPetColor {
 
     // ---------------- Handling ----------------
     public static void handle(PacketSetPetColor msg, Supplier<NetworkEvent.Context> ctx) {
-        ctx.get().enqueueWork(() -> {
-            ServerPlayer player = ctx.get().getSender();
+        NetworkEvent.Context context = ctx.get();
+        context.enqueueWork(() -> {
+            ServerPlayer player = context.getSender();
             if (player == null) return;
 
             Entity active = PetManager.getActivePet(player);
@@ -70,30 +66,48 @@ public class PacketSetPetColor {
                 // RANDOM ON → PNBT flag true + clear PlayerData color
                 setRandomFlag(player, true);
 
-                PlayerData.get(player).ifPresent(pd ->
-                        pd.setEquippedColor(PlayerData.TYPE_PETS, -1) // clear explicit color
-                );
+                PlayerData.get(player).ifPresent(pd -> {
+                    pd.setEquippedColor(PlayerData.TYPE_PETS, -1); // clear explicit color
+                    // Clear any species extras too (so Random has full control)
+                    pd.setEquippedStyleTag(PlayerData.TYPE_PETS, new CompoundTag());
+                });
 
                 clearEntityDyeLock(active);
                 PetManager.updatePlayerPet(player);
                 return;
             }
 
-            // RANDOM OFF → persist explicit ARGB in PlayerData + immediate visual apply
-            int argb = toARGB(msg.rgb);
-            DyeColor chosen = nearestDye(msg.rgb);
+            // RANDOM OFF → persist explicit ARGB in PlayerData + species-aware EXTRA for discrete entities
+            final int argb = toARGB(msg.rgb);
+            final DyeColor chosen = nearestDye(msg.rgb);
 
             setRandomFlag(player, false);
 
-            PlayerData.get(player).ifPresent(pd ->
-                    pd.setEquippedColor(PlayerData.TYPE_PETS, argb)
-            );
+            PlayerData.get(player).ifPresent(pd -> {
+                pd.setEquippedColor(PlayerData.TYPE_PETS, argb);
 
+                // Species-aware extras: if current active pet is sheep, store wool index.
+                // (If active is null, we still persist color; next spawn will map ARGB → dye.)
+                if (active instanceof Sheep) {
+                    CompoundTag extra = pd.getEquippedStyleTag(PlayerData.TYPE_PETS);
+                    extra.putInt("wool", Math.max(0, Math.min(15, chosen.getId())));
+                    pd.setEquippedStyleTag(PlayerData.TYPE_PETS, extra);
+                } else {
+                    // Optional: you can add other species mappings later (e.g., "collar" for wolves)
+                    // For now, we keep ARGB only for non-sheep.
+                }
+            });
+
+            // Clear the entity-side lock so the next style application wins
             clearEntityDyeLock(active);
-            applyToActivePet(player, chosen); // instant feedback
-            PetManager.updatePlayerPet(player); // ensure server-side restyle uses persisted value
+
+            // Immediate visual apply for snappy UX (if a pet is present)
+            applyToActivePet(player, chosen);
+
+            // Ensure server-side restyle uses the persisted value
+            PetManager.updatePlayerPet(player);
         });
-        ctx.get().setPacketHandled(true);
+        context.setPacketHandled(true);
     }
 
     // ---------------- Legacy random toggle PNBT ----------------
@@ -107,10 +121,10 @@ public class PacketSetPetColor {
     // Clear the entity-side lock so the next style application wins.
     private static void clearEntityDyeLock(Entity pet) {
         if (pet == null) return;
-        CompoundTag etag = pet.getPersistentData().getCompound(PNBT_ROOT);
-        if (!etag.isEmpty() && etag.contains("dye")) {
-            etag.remove("dye");
-            pet.getPersistentData().put(PNBT_ROOT, etag);
+        CompoundTag root = pet.getPersistentData().getCompound(PNBT_ROOT);
+        if (!root.isEmpty() && root.contains("dye")) {
+            root.remove("dye");
+            pet.getPersistentData().put(PNBT_ROOT, root);
         }
     }
 

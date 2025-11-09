@@ -42,11 +42,11 @@ import java.util.concurrent.ConcurrentHashMap;
 /**
  * Cosmetic pet lifecycle + safety  (Forge 47.4.0 / MC 1.20.1).
  *
- * Edits in this rewrite:
+ * Key points:
  *  - Authoritative style push on every spawn/adopt/refresh (from PlayerData, PNBT fallback).
  *  - Clear entity-side locks before applying; mirror applied choices back to ENBT.
- *  - Debounce still blocks only spawning, never restyles.
- *  - No aquatic entities added.
+ *  - Debounce is BYPASSED when the equipped pet changes (fixes double-click-to-equip).
+ *  - Sheep: prefers PlayerData.styles.extra.int("wool") if present; falls back to ARGB → nearest dye.
  */
 @Mod.EventBusSubscriber(modid = CosmeticsLite.MODID, bus = Mod.EventBusSubscriber.Bus.FORGE)
 public class PetManager {
@@ -54,6 +54,9 @@ public class PetManager {
 
     /** Active cosmetic pet instance per player. */
     private static final Map<UUID, Entity> ACTIVE_PETS = new ConcurrentHashMap<>();
+
+    /** Tracks the last desired pet id string per player to detect equip changes (bypass debounce). */
+    private static final Map<UUID, String> LAST_DESIRED = new ConcurrentHashMap<>();
 
     /** Warm-up window after login so PlayerData can settle. */
     private static final Map<UUID, Integer> LOGIN_WARMUP = new ConcurrentHashMap<>();
@@ -80,7 +83,7 @@ public class PetManager {
     private static final String PNBT_ROOT        = "coslite";
     private static final String PNBT_PET_RANDOM  = "pet_random";
     private static final String PNBT_PET_DYE     = "pet_dye";     // String (DyeColor#getName)
-    private static final String PNBT_PET_VARIANT = "pet_variant"; // String key (e.g., "tabby","temperate","white"...)
+    private static final String PNBT_PET_VARIANT = "pet_variant"; // String key
 
     /* ====================================================================== */
     /* Public API                                                             */
@@ -93,35 +96,47 @@ public class PetManager {
             return;
         }
 
-        // Only block *spawning*. We still allow re-style of an existing or adopted pet.
-        Integer db = DEBOUNCE.get(player.getUUID());
-        boolean spawnBlocked = (db != null && db > 0);
+        UUID pid = player.getUUID();
 
+        // Determine desired equipped pet
         ResourceLocation desiredId = PlayerData.get(player)
                 .map(pd -> pd.getEquippedId(PlayerData.TYPE_PETS))
                 .orElse(null);
+        String desiredStr = (desiredId == null) ? "" : desiredId.toString();
 
-        Entity current = ACTIVE_PETS.get(player.getUUID());
+        // Detect equip change and record
+        String last = LAST_DESIRED.get(pid);
+        boolean equipChanged = !Objects.equals(last, desiredStr);
+        if (equipChanged) LAST_DESIRED.put(pid, desiredStr);
+
+        // Only block *spawning*. We still allow re-style of an existing/adopted pet.
+        Integer db = DEBOUNCE.get(pid);
+        boolean spawnBlocked = (db != null && db > 0);
+
+        // BYPASS debounce on an equip change (so first click takes effect)
+        if (equipChanged) spawnBlocked = false;
+
+        Entity current = ACTIVE_PETS.get(pid);
 
         if (!shouldSpawnRealPet(desiredId)) {
             // No pet desired -> remove if present
-            if (current != null && !current.isRemoved()) despawnPet(player.getUUID(), player);
+            if (current != null && !current.isRemoved()) despawnPet(pid, player);
             return;
         }
 
         // 1) Adopt-if-present: if a correct owned cosmetic entity exists nearby, adopt it
         Entity nearbyOwned = findNearbyOwnedCosmetic(server, player, desiredId);
         if (nearbyOwned != null) {
-            ACTIVE_PETS.put(player.getUUID(), nearbyOwned);
+            ACTIVE_PETS.put(pid, nearbyOwned);
             applyCosmeticSafety(nearbyOwned);
-            applySavedStyleFromPlayer(player, nearbyOwned); // <<< authoritative style push
+            applySavedStyleFromPlayer(player, nearbyOwned); // authoritative style push
             return; // no spawn churn
         }
 
         // 2) If we already track one and it's correct, just restyle and keep it
         if (current != null && !current.isRemoved() && isCorrectPetType(current, desiredId)) {
             applyCosmeticSafety(current);
-            applySavedStyleFromPlayer(player, current); // <<< authoritative style push
+            applySavedStyleFromPlayer(player, current); // authoritative style push
             return;
         }
 
@@ -129,7 +144,7 @@ public class PetManager {
         if (spawnBlocked) return;
 
         spawnPetForId(player, server, desiredId);
-        DEBOUNCE.put(player.getUUID(), DEBOUNCE_TICKS);
+        DEBOUNCE.put(pid, DEBOUNCE_TICKS);
     }
 
     /** Expose the currently tracked cosmetic pet (server side). */
@@ -184,7 +199,7 @@ public class PetManager {
             // Villager ownership is tracked via ENBT owner tag below.
 
             applyCosmeticSafety(pet);
-            applySavedStyleFromPlayer(player, pet); // <<< authoritative style push before add
+            applySavedStyleFromPlayer(player, pet); // authoritative style push before add
 
             if (level.addFreshEntity(pet)) {
                 ACTIVE_PETS.put(player.getUUID(), pet);
@@ -213,6 +228,7 @@ public class PetManager {
         despawnPet(playerId, null);
         LOGIN_WARMUP.remove(playerId);
         DEBOUNCE.remove(playerId);
+        LAST_DESIRED.remove(playerId);
     }
 
     /* ====================================================================== */
@@ -234,6 +250,10 @@ public class PetManager {
 
         LOGIN_WARMUP.put(sp.getUUID(), WARMUP_TICKS);
         DEBOUNCE.put(sp.getUUID(), 0);
+
+        // Seed last-desired on login to avoid spurious "changed" detection
+        ResourceLocation desiredId = PlayerData.get(sp).map(pd -> pd.getEquippedId(PlayerData.TYPE_PETS)).orElse(null);
+        LAST_DESIRED.put(sp.getUUID(), desiredId == null ? "" : desiredId.toString());
 
         // Immediate + next tick
         updatePlayerPet(sp);
@@ -286,33 +306,7 @@ public class PetManager {
         if (e.phase != TickEvent.Phase.END) return;
         if (sp.tickCount % PRESENCE_CHECK_PERIOD != 0) return;
 
-        // Respect spawn debounce during presence check (restyle still allowed via updatePlayerPet logic)
-        Integer d2 = DEBOUNCE.get(sp.getUUID());
-        boolean spawnBlocked = (d2 != null && d2 > 0);
-
-        ResourceLocation desired = PlayerData.get(sp).map(pd -> pd.getEquippedId(PlayerData.TYPE_PETS)).orElse(null);
-        Entity current = ACTIVE_PETS.get(sp.getUUID());
-
-        if (!shouldSpawnRealPet(desired)) {
-            if (current != null && !current.isRemoved()) despawnPet(sp.getUUID(), sp);
-            return;
-        }
-
-        // Adopt nearby correct one if we're not tracking (handles cases like chunk reloads)
-        if (current == null || current.isRemoved() || !isCorrectPetType(current, desired)) {
-            Entity adopt = findNearbyOwnedCosmetic((ServerLevel) sp.level(), sp, desired);
-            if (adopt != null) {
-                ACTIVE_PETS.put(sp.getUUID(), adopt);
-                applyCosmeticSafety(adopt);
-                applySavedStyleFromPlayer(sp, adopt); // <<< authoritative style push
-                return;
-            }
-            if (!spawnBlocked) updatePlayerPet(sp); // this will spawn and set debounce
-            return;
-        }
-
-        applyCosmeticSafety(current);
-        applySavedStyleFromPlayer(sp, current); // <<< authoritative style push
+        updatePlayerPet(sp);
     }
 
     @SubscribeEvent
@@ -377,12 +371,6 @@ public class PetManager {
     /* Style: Authoritative apply from PlayerData (PNBT fallback) + capture   */
     /* ====================================================================== */
 
-    /**
-     * Clear stale entity locks, then apply the player’s saved style:
-     *  - Primary source: PlayerData (variant/color/extra)
-     *  - Fallbacks: PNBT keys (pet_dye, pet_variant) when present
-     * Mirrors applied values back to ENBT so adopt/respawn stays consistent.
-     */
     private static void applySavedStyleFromPlayer(ServerPlayer owner, Entity pet) {
         if (owner == null || pet == null) return;
 
@@ -404,14 +392,38 @@ public class PetManager {
         if (opt.isPresent()) {
             var pd = opt.get();
 
-            // ----- Color -----
+            // ----- Extra composite styles (prefer species-specific values first) -----
+            CompoundTag extra = pd.getEquippedStyleTag(PlayerData.TYPE_PETS);
+            if (extra != null && !extra.isEmpty()) {
+                // Sheep: discrete wool index preferred
+                if (pet instanceof Sheep s && extra.contains("wool")) {
+                    int idx = Math.max(0, Math.min(15, extra.getInt("wool")));
+                    s.setColor(DyeColor.byId(idx));
+                    putEntityDyeNBT(pet, DyeColor.byId(idx));
+                }
+
+                // Horse/villager extra remain as before
+                if (pet instanceof net.minecraft.world.entity.animal.horse.Horse) {
+                    applyHorseExtra(pet, extra);
+                } else if (pet instanceof com.pastlands.cosmeticslite.entity.CosmeticPetVillager v) {
+                    int t  = extra.contains("type")       ? extra.getInt("type")       : 0;
+                    int pr = extra.contains("profession") ? extra.getInt("profession") : 0;
+                    int lv = extra.contains("level")      ? extra.getInt("level")      : 1;
+                    v.setCosmeticDataByOrdinal(t, pr, Math.max(1, Math.min(5, lv)));
+                }
+            }
+
+            // ----- Color (ARGB) -----
             int colorARGB = pd.getEquippedColor(PlayerData.TYPE_PETS); // -1 if unused
             if (colorARGB >= 0) {
                 DyeColor dye = argbToNearestDye(colorARGB);
                 if (dye != null) {
                     if (pet instanceof Sheep s) {
-                        s.setColor(dye);
-                        putEntityDyeNBT(pet, dye);
+                        // Only apply ARGB→dye if extra.wool was NOT present
+                        if (extra == null || !extra.contains("wool")) {
+                            s.setColor(dye);
+                            putEntityDyeNBT(pet, dye);
+                        }
                     } else if (pet instanceof Wolf w) {
                         w.setCollarColor(dye);
                         putEntityDyeNBT(pet, dye);
@@ -426,22 +438,8 @@ public class PetManager {
                 putEntityVariantNBT(pet, variant);
             }
 
-            // ----- Extra composite styles (horse/villager etc.) -----
-            CompoundTag extra = pd.getEquippedStyleTag(PlayerData.TYPE_PETS);
-            if (extra != null && !extra.isEmpty()) {
-                if (pet instanceof net.minecraft.world.entity.animal.horse.Horse) {
-                    applyHorseExtra(pet, extra);
-                } else if (pet instanceof com.pastlands.cosmeticslite.entity.CosmeticPetVillager v) {
-                    // Expect keys: type (int), profession (int), level (1..5)
-                    int t  = extra.contains("type")       ? extra.getInt("type")       : 0;
-                    int pr = extra.contains("profession") ? extra.getInt("profession") : 0;
-                    int lv = extra.contains("level")      ? extra.getInt("level")      : 1;
-                    v.setCosmeticDataByOrdinal(t, pr, Math.max(1, Math.min(5, lv)));
-                }
-            }
-
             // If PD had any explicit style, we’re done
-            if (colorARGB >= 0 || variant >= 0 || (extra != null && !extra.isEmpty())) {
+            if ((extra != null && !extra.isEmpty()) || colorARGB >= 0 || variant >= 0) {
                 return;
             }
         }
@@ -469,7 +467,6 @@ public class PetManager {
             if (proot.contains(PNBT_PET_VARIANT)) {
                 String key = proot.getString(PNBT_PET_VARIANT);
                 if (applyVariantKeyNow(pet, key)) {
-                    // mirror the string key into ENBT as a hint
                     CompoundTag tag = pet.getPersistentData().getCompound(ENBT_ROOT);
                     if (tag.isEmpty()) tag = new CompoundTag();
                     tag.putString(ENBT_VAR, key);
@@ -490,8 +487,15 @@ public class PetManager {
 
         // Capture live dye (for dye-aware entities)
         DyeColor liveDye = getEntityLiveDye(pet);
-        if (liveDye != null && liveDye != DyeColor.WHITE) {
+        if (liveDye != null) {
             pd.setEquippedColor(PlayerData.TYPE_PETS, dyeToARGB(liveDye));
+
+            // Sheep: also store discrete wool index
+            if (pet instanceof Sheep) {
+                CompoundTag extra = pd.getEquippedStyleTag(PlayerData.TYPE_PETS);
+                extra.putInt("wool", Math.max(0, Math.min(15, liveDye.getId())));
+                pd.setEquippedStyleTag(PlayerData.TYPE_PETS, extra);
+            }
         }
 
         // Capture variant if available
@@ -516,7 +520,7 @@ public class PetManager {
             CompoundTag vill = new CompoundTag();
             vill.putInt("type",       v.getCosmeticTypeOrdinal());
             vill.putInt("profession", v.getCosmeticProfessionOrdinal());
-            vill.putInt("level",      Math.max(1, Math.min(5, v.getCosmeticLevel())));
+            vill.putInt("level",      Mth.clamp(v.getCosmeticLevel(), 1, 5));
             vill.getAllKeys().forEach(k -> extra.put(k, vill.get(k)));
         }
 
@@ -526,7 +530,6 @@ public class PetManager {
     /* ------------------------- Random toggle helpers (legacy) -------------- */
 
     private static boolean isRandomOn(ServerPlayer owner) {
-        // We keep supporting PNBT random flag to avoid breaking existing UIs that toggle it there.
         CompoundTag root = getPlayerCoslite(owner, false);
         return root != null && root.getBoolean(PNBT_PET_RANDOM);
     }

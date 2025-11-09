@@ -138,8 +138,8 @@ public class CosmeticsChestScreen extends Screen {
     private ColorWheelWidget colorWheel;
     private boolean randomEnabled = false;
     private VariantDropdownWidget variantDropdown;
-	private String lastVariantSpeciesKey = "";
-	// geometry we use to rebuild the dropdown when species changes
+    private String lastVariantSpeciesKey = "";
+    // geometry we use to rebuild the dropdown when species changes
     private int varDDX, varDDY, varDDW;
 
     // ---- Refactored parts ----
@@ -231,43 +231,45 @@ public class CosmeticsChestScreen extends Screen {
         if (variantDropdown != null) variantDropdown.visible = petsActive;
 
         refreshVariantDropdown();
-// Ensure PETS extras (random toggle + wheel enable state) reflect saved prefs on first open
-updatePetsUiFromPrefs();
+        // Ensure PETS extras (random toggle + wheel enable state) reflect saved prefs on first open
+        updatePetsUiFromPrefs();
     }
-private VariantDropdownWidget createVariantDropdown(int x, int y, int w) {
-    return addRenderableWidget(new VariantDropdownWidget(
-            x, y, w, 16, Collections.emptyList(),
-            choice -> {
-                if (choice != null) {
-                    setStatus("Variant: " + choice.label.getString());
 
-                    // remember per-pet variant locally
-                    String species = currentPetSpecies();
-                    if (!species.isEmpty()) {
-                        ClientState.setPetVariantPref(species, choice.key);
+    private VariantDropdownWidget createVariantDropdown(int x, int y, int w) {
+        return addRenderableWidget(new VariantDropdownWidget(
+                x, y, w, 16, Collections.emptyList(),
+                choice -> {
+                    if (choice != null) {
+                        setStatus("Variant: " + choice.label.getString());
+
+                        // remember per-pet variant locally
+                        String species = currentPetSpecies();
+                        if (!species.isEmpty()) {
+                            ClientState.setPetVariantPref(species, choice.key);
+                        }
+
+                        // send to server
+                        CosmeticsLite.NETWORK.sendToServer(new PacketSetPetVariant(choice.key, false));
+                    } else {
+                        setStatus("Variant: none");
                     }
-
-                    // send to server
-                    CosmeticsLite.NETWORK.sendToServer(new PacketSetPetVariant(choice.key, false));
-                } else {
-                    setStatus("Variant: none");
                 }
-            }
-    ));
-}
-// Known pack order for the Hats grid; unknown packs fall after these, preserving original order.
-// You can tweak this list to whatever grouping you want to see first.
-private static final List<String> HAT_PACK_ORDER = java.util.Arrays.asList(
-        "base", "animal", "fantasy", "food"
-);
+        ));
+    }
 
-// Rank packs for grouping; unknown packs get a large rank so they appear after known groups.
-// Comparator is stable, so items within the same pack keep their current order.
-private int packRank(String pack) {
-    if (pack == null) return Integer.MAX_VALUE - 1;
-    int idx = HAT_PACK_ORDER.indexOf(pack.toLowerCase(java.util.Locale.ROOT));
-    return (idx >= 0) ? idx : (HAT_PACK_ORDER.size() + 1);
-}
+    // Known pack order for the Hats grid; unknown packs fall after these, preserving original order.
+    // You can tweak this list to whatever grouping you want to see first.
+    private static final List<String> HAT_PACK_ORDER = java.util.Arrays.asList(
+            "base", "animal", "fantasy", "food"
+    );
+
+    // Rank packs for grouping; unknown packs get a large rank so they appear after known groups.
+    // Comparator is stable, so items within the same pack keep their current order.
+    private int packRank(String pack) {
+        if (pack == null) return Integer.MAX_VALUE - 1;
+        int idx = HAT_PACK_ORDER.indexOf(pack.toLowerCase(java.util.Locale.ROOT));
+        return (idx >= 0) ? idx : (HAT_PACK_ORDER.size() + 1);
+    }
 
     // -----------------------------------------------------------------
     // Registry priming helper
@@ -395,18 +397,18 @@ private int packRank(String pack) {
         });
         colorWheel.active = !randomEnabled;
 
-// Variant dropdown (below color wheel) — widened & centered
-int ddW = 132;
-int ddX = ((leftBtn.getX() + rightBtn.getX() + CHEVRON_W) / 2) - (ddW / 2);
-int ddY = colorWheel.getY() + 56 + 8;
+        // Variant dropdown (below color wheel) — widened & centered
+        int ddW = 132;
+        int ddX = ((leftBtn.getX() + rightBtn.getX() + CHEVRON_W) / 2) - (ddW / 2);
+        int ddY = colorWheel.getY() + 56 + 8;
 
-// remember geometry so we can recreate the widget when species changes
-this.varDDX = ddX;
-this.varDDY = ddY;
-this.varDDW = ddW;
+        // remember geometry so we can recreate the widget when species changes
+        this.varDDX = ddX;
+        this.varDDY = ddY;
+        this.varDDW = ddW;
 
-// create the initial dropdown via helper
-this.variantDropdown = createVariantDropdown(varDDX, varDDY, varDDW);
+        // create the initial dropdown via helper
+        this.variantDropdown = createVariantDropdown(varDDX, varDDY, varDDW);
     }
 
     private void buildTabBar() {
@@ -423,32 +425,33 @@ this.variantDropdown = createVariantDropdown(varDDX, varDDY, varDDW);
         ));
         tabBar.setActiveKey(state.getActiveType());
         tabBar.setOnChange(key -> {
-    state.setActiveType(key);
-    state.setCurrentPage(0);
-    state.clearSelection(key);
-    rebuildGrid();
-    updateActionButtons();
+            state.setActiveType(key);
+            state.setCurrentPage(0);
+            state.clearSelection(key);
+            rebuildGrid();
+            updateActionButtons();
 
-    // Enabled persistently; pane self-gates in its own logic
-    particlePane.setEnabled(true);
+            // Enabled persistently; pane self-gates in its own logic
+            particlePane.setEnabled(true);
 
-    // Toggle visibility of PETS extras when switching tabs
-    boolean petsActive = "pets".equals(key);
-    if (randomBtn != null) randomBtn.visible = petsActive;
-    if (colorWheel != null) {
-        colorWheel.visible = petsActive;
-        colorWheel.active  = petsActive && !randomEnabled;
-    }
-    if (variantDropdown != null) {
-        variantDropdown.visible = petsActive;
-    }
+            // Toggle visibility of PETS extras when switching tabs
+            boolean petsActive = "pets".equals(key);
+            if (randomBtn != null) randomBtn.visible = petsActive;
+            if (colorWheel != null) {
+                colorWheel.visible = petsActive;
+                colorWheel.active  = petsActive && !randomEnabled;
+            }
+            if (variantDropdown != null) {
+                variantDropdown.visible = petsActive;
+            }
 
-    refreshVariantDropdown();
-    // NEW: also sync Random toggle + wheel enabled state to the CURRENT pet
-    updatePetsUiFromPrefs();
+            refreshVariantDropdown();
+            // NEW: also sync Random toggle + wheel enabled state to the CURRENT pet
+            updatePetsUiFromPrefs();
 
-    // Rebuild hat filter chips when switching tabs
-    buildHatFilterChips();});
+            // Rebuild hat filter chips when switching tabs
+            buildHatFilterChips();
+        });
 
     }
 
@@ -497,67 +500,64 @@ this.variantDropdown = createVariantDropdown(varDDX, varDDY, varDDW);
         mannequinPane.setOverridesSupplier(this::resolvePreviewMap);
     }
 
-private void refreshVariantDropdown() {
-    if (variantDropdown == null) return;
+    private void refreshVariantDropdown() {
+        if (variantDropdown == null) return;
 
-    boolean petsActive = "pets".equals(state.getActiveType());
-    variantDropdown.visible = petsActive;
-    if (!petsActive) return;
+        boolean petsActive = "pets".equals(state.getActiveType());
+        variantDropdown.visible = petsActive;
+        if (!petsActive) return;
 
-    // Decide which pet to show options for: selected on PETS, else currently equipped
-    CosmeticDef def = null;
-    CosmeticDef selected = getSelectedDefForType("pets");
-    if (selected != null) {
-        def = selected;
-    } else {
-        LocalPlayer p = Minecraft.getInstance().player;
-        ResourceLocation petId = (p != null) ? ClientState.getEquippedId(p, "pets")
-                                             : ClientState.getEquippedId("pets");
-        if (petId != null && !isAir(petId)) def = CosmeticsRegistry.get(petId);
-    }
-
-    String species = (def != null) ? speciesFromId(def.id()) : "";
-    java.util.List<VariantDropdownWidget.VariantOption> options = java.util.Collections.emptyList();
-    if (def != null) {
-        options = com.pastlands.cosmeticslite.client.screen.parts.PetVariantOptions.forPet(def.id());
-    }
-
-    // If the species changed since last time, rebuild the widget to clear stale state
-    if (!java.util.Objects.equals(species, lastVariantSpeciesKey)) {
-        try { this.removeWidget(variantDropdown); } catch (Throwable ignored) {}
-        variantDropdown = createVariantDropdown(varDDX, varDDY, varDDW);
-        lastVariantSpeciesKey = species;
-    }
-
-    if (options.isEmpty()) {
-        variantDropdown.setOptions(java.util.Collections.emptyList());
-        variantDropdown.setActive(false);
-        setStatus("");              // clear "Variant: ..." label
-        updatePetsUiFromPrefs();    // still sync random/wheel
-        return;
-    }
-
-    // Float saved preference (if any) to top so it becomes the visible choice
-    if (!species.isEmpty()) {
-        String pref = ClientState.getPetVariantPref(species);
-        if (pref != null) {
-            final String prefKey = pref;
-            options.sort((a, b) -> a.key.equals(prefKey) ? -1 : (b.key.equals(prefKey) ? 1 : 0));
+        // Decide which pet to show options for: selected on PETS, else currently equipped
+        CosmeticDef def = null;
+        CosmeticDef selected = getSelectedDefForType("pets");
+        if (selected != null) {
+            def = selected;
+        } else {
+            LocalPlayer p = Minecraft.getInstance().player;
+            ResourceLocation petId = (p != null) ? ClientState.getEquippedId(p, "pets")
+                    : ClientState.getEquippedId("pets");
+            if (petId != null && !isAir(petId)) def = CosmeticsRegistry.get(petId);
         }
+
+        String species = (def != null) ? speciesFromId(def.id()) : "";
+        java.util.List<VariantDropdownWidget.VariantOption> options = java.util.Collections.emptyList();
+        if (def != null) {
+            options = com.pastlands.cosmeticslite.client.screen.parts.PetVariantOptions.forPet(def.id());
+        }
+
+        // If the species changed since last time, rebuild the widget to clear stale state
+        if (!java.util.Objects.equals(species, lastVariantSpeciesKey)) {
+            try { this.removeWidget(variantDropdown); } catch (Throwable ignored) {}
+            variantDropdown = createVariantDropdown(varDDX, varDDY, varDDW);
+            lastVariantSpeciesKey = species;
+        }
+
+        if (options.isEmpty()) {
+            variantDropdown.setOptions(java.util.Collections.emptyList());
+            variantDropdown.setActive(false);
+            setStatus("");              // clear "Variant: ..." label
+            updatePetsUiFromPrefs();    // still sync random/wheel
+            return;
+        }
+
+        // Float saved preference (if any) to top so it becomes the visible choice
+        if (!species.isEmpty()) {
+            String pref = ClientState.getPetVariantPref(species);
+            if (pref != null) {
+                final String prefKey = pref;
+                options.sort((a, b) -> a.key.equals(prefKey) ? -1 : (b.key.equals(prefKey) ? 1 : 0));
+            }
+        }
+
+        variantDropdown.setOptions(options);
+        variantDropdown.setActive(true);
+
+        // Status line reflects current "top" (either pref or first option)
+        setStatus("Variant: " + options.get(0).label.getString());
+
+        // also sync Random toggle + wheel for this species
+        updatePetsUiFromPrefs();
     }
-
-    variantDropdown.setOptions(options);
-    variantDropdown.setActive(true);
-
-    // Status line reflects current "top" (either pref or first option)
-    setStatus("Variant: " + options.get(0).label.getString());
-
-    // also sync Random toggle + wheel for this species
-    updatePetsUiFromPrefs();
-}
-
-
-
 
     /** Parrot color variants (unchanged). */
     private static List<VariantDropdownWidget.VariantOption> buildParrotVariantOptions() {
@@ -602,153 +602,134 @@ private void refreshVariantDropdown() {
         updateActionButtons();
     }
 
-private List<CosmeticDef> currentSource() {
-    String type = state.getActiveType();
-    List<CosmeticDef> list = CosmeticsRegistry.getByType(type);
+    private List<CosmeticDef> currentSource() {
+        String type = state.getActiveType();
+        List<CosmeticDef> list = CosmeticsRegistry.getByType(type);
 
-if ("hats".equals(type)) {
-    List<CosmeticDef> filtered = new ArrayList<>();
+        if ("hats".equals(type)) {
+            List<CosmeticDef> filtered = new ArrayList<>();
 
-    Set<String> packs = new LinkedHashSet<>();
-    if (selectedHatPacks.isEmpty() || selectedHatPacks.contains(PACK_ALL)) {
-        // show all
-    } else {
-        packs.addAll(selectedHatPacks);
-    }
+            Set<String> packs = new LinkedHashSet<>();
+            if (selectedHatPacks.isEmpty() || selectedHatPacks.contains(PACK_ALL)) {
+                // show all
+            } else {
+                packs.addAll(selectedHatPacks);
+            }
 
-    for (CosmeticDef d : list) {
-        String p = d.pack();
-        if (!packs.isEmpty() && !packs.contains(p)) continue;
-        filtered.add(d);
-    }
+            for (CosmeticDef d : list) {
+                String p = d.pack();
+                if (!packs.isEmpty() && !packs.contains(p)) continue;
+                filtered.add(d);
+            }
 
-    // Group by pack using a stable sort
-    filtered.sort(new java.util.Comparator<>() {
-        @Override
-        public int compare(CosmeticDef a, CosmeticDef b) {
-            int ra = packRank(a.pack());
-            int rb = packRank(b.pack());
-            return Integer.compare(ra, rb);
+            // Group by pack using a stable sort
+            filtered.sort(new java.util.Comparator<>() {
+                @Override
+                public int compare(CosmeticDef a, CosmeticDef b) {
+                    int ra = packRank(a.pack());
+                    int rb = packRank(b.pack());
+                    return Integer.compare(ra, rb);
+                }
+            });
+
+            return filtered;
         }
-    });
 
-    return filtered;
-}
-
-return list;
-}
-
-
-private void rebuildGrid() {
-    List<CosmeticDef> src = currentSource();
-    state.setPerPage(GRID_COLS * GRID_ROWS);
-
-    grid.setData(src);
-    grid.setCurrentPage(state.getCurrentPage());
-
-    // Prevent pre-selection highlight on gadgets tab
-    if ("gadgets".equals(state.getActiveType())) {
-        state.clearSelection("gadgets");
-        grid.setSelectedGlobalIndex(-1);
-    } else {
-        grid.setSelectedGlobalIndex(state.getSelectedIndex(state.getActiveType()));
+        return list;
     }
 
-    grid.setEquippedId(ClientState.getEquippedId(state.getActiveType()));
+    private void rebuildGrid() {
+        List<CosmeticDef> src = currentSource();
+        state.setPerPage(GRID_COLS * GRID_ROWS);
 
-    int totalPages = Math.max(1, (int) Math.ceil(src.size() / (double) state.getPerPage()));
-    state.setTotalPages(totalPages);
-    if (leftBtn  != null) leftBtn.active  = state.getCurrentPage() > 0;
-    if (rightBtn != null) rightBtn.active = state.getCurrentPage() < totalPages - 1;
+        grid.setData(src);
+        grid.setCurrentPage(state.getCurrentPage());
 
-    // NEW: whenever the grid is rebuilt while PETS is active,
-    // refresh the dropdown options AND sync the random toggle/wheel state.
-    if ("pets".equals(state.getActiveType())) {
-        refreshVariantDropdown();
-        updatePetsUiFromPrefs();
+        // Prevent pre-selection highlight on gadgets tab
+        if ("gadgets".equals(state.getActiveType())) {
+            state.clearSelection("gadgets");
+            grid.setSelectedGlobalIndex(-1);
+        } else {
+            grid.setSelectedGlobalIndex(state.getSelectedIndex(state.getActiveType()));
+        }
+
+        grid.setEquippedId(ClientState.getEquippedId(state.getActiveType()));
+
+        int totalPages = Math.max(1, (int) Math.ceil(src.size() / (double) state.getPerPage()));
+        state.setTotalPages(totalPages);
+        if (leftBtn  != null) leftBtn.active  = state.getCurrentPage() > 0;
+        if (rightBtn != null) rightBtn.active = state.getCurrentPage() < totalPages - 1;
+
+        // NEW: whenever the grid is rebuilt while PETS is active,
+        // refresh the dropdown options AND sync the random toggle/wheel state.
+        if ("pets".equals(state.getActiveType())) {
+            refreshVariantDropdown();
+            updatePetsUiFromPrefs();
+        }
     }
-}
-
 
     // ========================================================================
-// Actions
-// ========================================================================
-private void onEquipClicked() {
-    CosmeticDef def = getCurrentlySelectedDef();
-    if (def == null) return;
+    // Actions
+    // ========================================================================
+    private void onEquipClicked() {
+        CosmeticDef def = getCurrentlySelectedDef();
+        if (def == null) return;
 
-    String type = state.getActiveType();
-    ResourceLocation newId = def.id();
-    ResourceLocation currentId = ClientState.getEquippedId(type);
+        String type = state.getActiveType();
+        ResourceLocation newId = def.id();
+        ResourceLocation currentId = ClientState.getEquippedId(type);
 
-    // If something else is equipped, unequip it first automatically
-    if (!isAir(currentId) && !currentId.equals(newId)) {
-        PacketEquipRequest.send(
-    type,
-    ResourceLocation.fromNamespaceAndPath("minecraft", "air"),
-    -1, -1,
-    new CompoundTag()
-);
-        ClientState.setEquippedId(type, ResourceLocation.fromNamespaceAndPath("minecraft", "air"));
+        // --- FIX: send only ONE equip packet. Do NOT pre-clear. ---
+        if (isAir(newId) || newId.equals(currentId)) {
+            // nothing to do
+            return;
+        }
+
+        PacketEquipRequest.send(type, newId, -1, -1, new CompoundTag());
+        ClientState.setEquippedId(type, newId);
+
+        state.clearAllHighlights();
+        rebuildGrid();
+        updateActionButtons();
+
+        // If we just equipped a PET, refresh its Variant dropdown and color/random UI
+        if ("pets".equals(type)) {
+            state.clearSelection("pets");
+            refreshVariantDropdown();
+            updatePetsUiFromPrefs();
+            state.setStatus("", 0);
+            // if (variantDropdown != null) variantDropdown.collapse();
+        }
+
+        // If we just equipped a gadget, close the cosmetics screen and open the gadget list.
+        if ("gadgets".equals(type)) {
+            Minecraft mc = Minecraft.getInstance();
+            mc.execute(() -> {
+                mc.setScreen(null);                 // close this screen so the popup has focus
+                GadgetClientCommands.openGadgetList(true);
+            });
+        }
     }
 
-    // Equip the new cosmetic
-    PacketEquipRequest.send(type, newId, -1, -1, new CompoundTag());
-    ClientState.setEquippedId(type, newId);
+    private void onUnequipThisTab() {
+        String type = state.getActiveType();
+        ResourceLocation air = ResourceLocation.fromNamespaceAndPath("minecraft", "air");
 
-    state.clearAllHighlights();
-    rebuildGrid();
-    updateActionButtons();
+        PacketEquipRequest.send(type, air, -1, -1, new CompoundTag());
+        ClientState.setEquippedId(type, air);
 
-// If we just equipped a PET, refresh its Variant dropdown and color/random UI
-if ("pets".equals(type)) {
-    // NEW: ensure we’re not still “selected” on the old pet
-    state.clearSelection("pets");
+        state.clearSelection(type);
+        rebuildGrid();
+        updateActionButtons();
 
-    refreshVariantDropdown();
-    updatePetsUiFromPrefs();
-
-    // NEW: stop any lingering “Variant: …” status from a previous pet
-    state.setStatus("", 0);
-
-    // (Optional) if your VariantDropdownWidget has a collapse()/setExpanded(false)
-    // call it here so an open dropdown can’t visually stick to the old species.
-    // if (variantDropdown != null) variantDropdown.collapse();
-}
-
-
-    // If we just equipped a gadget, close the cosmetics screen and open the gadget list.
-    // The list is set to auto-reopen ~3s after each use (see GadgetClientCommands.openGadgetList(true)).
-    if ("gadgets".equals(type)) {
-        Minecraft mc = Minecraft.getInstance();
-        mc.execute(() -> {
-            mc.setScreen(null);                 // close this screen so the popup has focus
-            GadgetClientCommands.openGadgetList(true);
-        });
+        // keep PETS side-panel in sync when unequipping on the Pets tab
+        if ("pets".equals(type)) {
+            refreshVariantDropdown();
+            updatePetsUiFromPrefs();
+            state.setStatus("", 0);
+            // if (variantDropdown != null) variantDropdown.collapse();
+        }
     }
-}
-
-
-private void onUnequipThisTab() {
-    String type = state.getActiveType();
-    ResourceLocation air = ResourceLocation.fromNamespaceAndPath("minecraft", "air");
-
-    PacketEquipRequest.send(type, air, -1, -1, new CompoundTag());
-    ClientState.setEquippedId(type, air);
-
-    state.clearSelection(type);
-    rebuildGrid();
-    updateActionButtons();
-
-    // NEW: keep PETS side-panel in sync when unequipping on the Pets tab
-    if ("pets".equals(type)) {
-        refreshVariantDropdown();
-        updatePetsUiFromPrefs();
-        state.setStatus("", 0);
-        // if (variantDropdown != null) variantDropdown.collapse();
-    }
-}
-
 
     private void onClearEquipped() {
         ResourceLocation air = ResourceLocation.fromNamespaceAndPath("minecraft", "air");
@@ -769,19 +750,19 @@ private void onUnequipThisTab() {
         return (sel >= 0 && sel < list.size()) ? list.get(sel) : null;
     }
 
-private CosmeticDef getSelectedDefForType(String typeKey) {
-    int sel = state.getSelectedIndex(typeKey);
-    if (sel < 0) return null;
+    private CosmeticDef getSelectedDefForType(String typeKey) {
+        int sel = state.getSelectedIndex(typeKey);
+        if (sel < 0) return null;
 
-    // IMPORTANT: on the Hats tab the grid is using a filtered/sorted view.
-    // The preview must look up the selection from the same source, not the raw registry.
-    List<CosmeticDef> list =
-            ("hats".equals(typeKey) && typeKey.equals(state.getActiveType()))
-                    ? currentSource()                           // filtered + grouped view used by the grid
-                    : CosmeticsRegistry.getByType(typeKey);     // others unchanged
+        // IMPORTANT: on the Hats tab the grid is using a filtered/sorted view.
+        // The preview must look up the selection from the same source, not the raw registry.
+        List<CosmeticDef> list =
+                ("hats".equals(typeKey) && typeKey.equals(state.getActiveType()))
+                        ? currentSource()                           // filtered + grouped view used by the grid
+                        : CosmeticsRegistry.getByType(typeKey);     // others unchanged
 
-    return (sel >= 0 && sel < list.size()) ? list.get(sel) : null;
-}
+        return (sel >= 0 && sel < list.size()) ? list.get(sel) : null;
+    }
 
     private int findEquippedIndexIn(List<CosmeticDef> src, String typeKey) {
         ResourceLocation eqId = ClientState.getEquippedId(typeKey);
@@ -859,7 +840,7 @@ private CosmeticDef getSelectedDefForType(String typeKey) {
             }
             if (anyHit) return true;
         }
-    
+
         // Give dropdown first chance to eat clicks
         if (variantDropdown != null && variantDropdown.mouseClicked(mouseX, mouseY, button)) {
             return true;
@@ -894,30 +875,29 @@ private CosmeticDef getSelectedDefForType(String typeKey) {
     // Tick & Render
     // ========================================================================
     @Override
-public void tick() {
-    super.tick();
-    if (particlePane != null) particlePane.tick();
-    if (mannequinPane != null) mannequinPane.tick();
+    public void tick() {
+        super.tick();
+        if (particlePane != null) particlePane.tick();
+        if (mannequinPane != null) mannequinPane.tick();
 
-    // Watchdog: keep PETS side-panel in sync even if a UI path missed a refresh.
-    if ("pets".equals(state.getActiveType())) {
-        // Determine the currently “effective” pet: selected on the grid, otherwise equipped.
-        CosmeticDef def = getSelectedDefForType("pets");
-        if (def == null) {
-            LocalPlayer p = Minecraft.getInstance().player;
-            ResourceLocation petId = (p != null) ? ClientState.getEquippedId(p, "pets")
-                                                 : ClientState.getEquippedId("pets");
-            if (petId != null && !isAir(petId)) def = CosmeticsRegistry.get(petId);
-        }
-        String species = (def != null) ? speciesFromId(def.id()) : "";
+        // Watchdog: keep PETS side-panel in sync even if a UI path missed a refresh.
+        if ("pets".equals(state.getActiveType())) {
+            // Determine the currently “effective” pet: selected on the grid, otherwise equipped.
+            CosmeticDef def = getSelectedDefForType("pets");
+            if (def == null) {
+                LocalPlayer p = Minecraft.getInstance().player;
+                ResourceLocation petId = (p != null) ? ClientState.getEquippedId(p, "pets")
+                        : ClientState.getEquippedId("pets");
+                if (petId != null && !isAir(petId)) def = CosmeticsRegistry.get(petId);
+            }
+            String species = (def != null) ? speciesFromId(def.id()) : "";
 
-        // If species changed since the last dropdown build, rebuild/sync it now.
-        if (!Objects.equals(species, lastVariantSpeciesKey)) {
-            refreshVariantDropdown();      // also calls updatePetsUiFromPrefs()
+            // If species changed since the last dropdown build, rebuild/sync it now.
+            if (!Objects.equals(species, lastVariantSpeciesKey)) {
+                refreshVariantDropdown();      // also calls updatePetsUiFromPrefs()
+            }
         }
     }
-}
-
 
     @Override
     public void render(GuiGraphics g, int mouseX, int mouseY, float partialTicks) {
@@ -1014,7 +994,7 @@ public void tick() {
             int maxWidth  = Math.max(40, textAreaR - textAreaL);
 
             java.util.List<FormattedCharSequence> lines =
-                this.font.split(Component.literal(descText), maxWidth);
+                    this.font.split(Component.literal(descText), maxWidth);
 
             int y = capB + 4;
             int maxLines = 3; // avoid overflow
@@ -1030,7 +1010,7 @@ public void tick() {
         // Let panes decide if they render (Particles tab or equipped effect)
         mannequinPane.render(g);
         particlePane.render(g);
-        
+
         // Render base widgets with masked mouse when dropdown overlaps
         super.render(g, maskedX, maskedY, partialTicks);
 
@@ -1132,56 +1112,53 @@ public void tick() {
         return map;
     }
 
-// ------------------------------------------------------------------------
-// PreviewResolver – unified per-type override map for preview mannequins
-// ------------------------------------------------------------------------
-public static final class PreviewResolver {
-    private static LocalPlayer MANNEQUIN = null;
-    // Active override set (per cosmetic type, e.g. "hats", "pets", etc.)
-    private static final Map<String, ResourceLocation> ACTIVE_OVERRIDES = new HashMap<>();
+    // ------------------------------------------------------------------------
+    // PreviewResolver – unified per-type override map for preview mannequins
+    // ------------------------------------------------------------------------
+    public static final class PreviewResolver {
+        private static LocalPlayer MANNEQUIN = null;
+        // Active override set (per cosmetic type, e.g. "hats", "pets", etc.)
+        private static final Map<String, ResourceLocation> ACTIVE_OVERRIDES = new HashMap<>();
 
-    /** Set the active mannequin used for preview contexts. */
-    static void setMannequin(LocalPlayer mannequin) {
-        MANNEQUIN = mannequin;
-    }
-
-    /** Begin a preview context with a new set of overrides. */
-    static void begin(LocalPlayer mannequin, Map<String, ResourceLocation> map) {
-        if (mannequin == null || map == null || map.isEmpty()) {
-            ACTIVE_OVERRIDES.clear();
-            return;
+        /** Set the active mannequin used for preview contexts. */
+        static void setMannequin(LocalPlayer mannequin) {
+            MANNEQUIN = mannequin;
         }
-        if (MANNEQUIN != null && mannequin == MANNEQUIN) {
-            ACTIVE_OVERRIDES.clear();
-            ACTIVE_OVERRIDES.putAll(map);
-        }
-    }
 
-    /** Retrieve the current override ID for a given cosmetic type. */
+        /** Begin a preview context with a new set of overrides. */
+        static void begin(LocalPlayer mannequin, Map<String, ResourceLocation> map) {
+            if (mannequin == null || map == null || map.isEmpty()) {
+                ACTIVE_OVERRIDES.clear();
+                return;
+            }
+            if (MANNEQUIN != null && mannequin == MANNEQUIN) {
+                ACTIVE_OVERRIDES.clear();
+                ACTIVE_OVERRIDES.putAll(map);
+            }
+        }
+
+        /** Retrieve the current override ID for a given cosmetic type. */
         @Nullable
-    public static ResourceLocation getOverride(String type, @Nullable net.minecraft.world.entity.Entity ignored) {
-        return ACTIVE_OVERRIDES.get(type);
+        public static ResourceLocation getOverride(String type, @Nullable net.minecraft.world.entity.Entity ignored) {
+            return ACTIVE_OVERRIDES.get(type);
+        }
+
+        /** True if this entity is the active mannequin used in the preview screen. */
+        public static boolean isPreviewEntity(@Nullable net.minecraft.world.entity.Entity entity) {
+            return entity != null && entity == MANNEQUIN;
+        }
+
+        /** Compatibility hook — called when preview ends. */
+        public static void end() {
+            clearAll();
+            MANNEQUIN = null;
+        }
+
+        /** Clear all overrides (used when closing preview or quickmenu). */
+        public static void clearAll() {
+            ACTIVE_OVERRIDES.clear();
+        }
     }
-
-    /** True if this entity is the active mannequin used in the preview screen. */
-    public static boolean isPreviewEntity(@Nullable net.minecraft.world.entity.Entity entity) {
-        return entity != null && entity == MANNEQUIN;
-    }
-
-    /** Compatibility hook — called when preview ends. */
-    public static void end() {
-        clearAll();
-        MANNEQUIN = null;
-    }
-
-    /** Clear all overrides (used when closing preview or quickmenu). */
-    public static void clearAll() {
-        ACTIVE_OVERRIDES.clear();
-    }
-}
-
-
-
 
     // ========================================================================
     // Pref helpers
@@ -1257,7 +1234,7 @@ public static final class PreviewResolver {
     }
 
     // ========================================================================
-    
+
     // Build/rebuild filter chips for HATS tab
     private void buildHatFilterChips() {
         hatChips.clear();
@@ -1321,7 +1298,8 @@ public static final class PreviewResolver {
         if (s == null || s.isEmpty()) return "";
         return Character.toUpperCase(s.charAt(0)) + s.substring(1);
     }
-// Drawing helpers
+
+    // Drawing helpers
     // ========================================================================
     private static void fillRounded(GuiGraphics g, int x0, int y0, int x1, int y1, int r, int argb) {
         if (r <= 0) { g.fill(x0, y0, x1, y1, argb); return; }
