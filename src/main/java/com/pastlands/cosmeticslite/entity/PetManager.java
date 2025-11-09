@@ -47,6 +47,7 @@ import java.util.concurrent.ConcurrentHashMap;
  *  - Clear entity-side locks before applying; mirror applied choices back to ENBT.
  *  - Debounce is BYPASSED when the equipped pet changes (fixes double-click-to-equip).
  *  - Sheep: prefers PlayerData.styles.extra.int("wool") if present; falls back to ARGB → nearest dye.
+ *  - Optional login warm-up sweep (dev-safe by default) to clear truly stray vanilla equines near player.
  */
 @Mod.EventBusSubscriber(modid = CosmeticsLite.MODID, bus = Mod.EventBusSubscriber.Bus.FORGE)
 public class PetManager {
@@ -57,6 +58,9 @@ public class PetManager {
 
     /** Tracks the last desired pet id string per player to detect equip changes (bypass debounce). */
     private static final Map<UUID, String> LAST_DESIRED = new ConcurrentHashMap<>();
+
+    /** Same-tick spawn guard to stop duplicate spawns from multiple update calls. */
+    private static final Set<UUID> SPAWN_GUARD = ConcurrentHashMap.newKeySet();
 
     /** Warm-up window after login so PlayerData can settle. */
     private static final Map<UUID, Integer> LOGIN_WARMUP = new ConcurrentHashMap<>();
@@ -71,6 +75,10 @@ public class PetManager {
 
     /** Interaction cooldown for “petting” w/ empty hand (blocks shears/buckets/etc.). */
     private static final int INTERACT_COOLDOWN_TICKS = 20 * 3; // 3s
+
+    // ===== Dev-safe toggles for stray sweep =====
+    private static final boolean SWEEP_STRAYS_ENABLED = false; // default OFF (safe for MP)
+    private static final boolean SWEEP_STRAYS_DEV_ONLY = true; // only singleplayer unless you flip this
 
     // Entity persistent data keys
     private static final String ENBT_ROOT = "coslite";
@@ -124,6 +132,13 @@ public class PetManager {
             return;
         }
 
+        // During login warm-up, optionally sweep stray vanilla equines near the player (dev-safe).
+        if (SWEEP_STRAYS_ENABLED
+                && (player.getServer().isSingleplayer() || !SWEEP_STRAYS_DEV_ONLY)
+                && LOGIN_WARMUP.getOrDefault(pid, 0) > 0) {
+            cleanupStrayVanillaHorses(server, player);
+        }
+
         // 1) Adopt-if-present: if a correct owned cosmetic entity exists nearby, adopt it
         Entity nearbyOwned = findNearbyOwnedCosmetic(server, player, desiredId);
         if (nearbyOwned != null) {
@@ -143,8 +158,15 @@ public class PetManager {
         // 3) Otherwise, spawn a fresh one (unless debounce blocks spawning this tick)
         if (spawnBlocked) return;
 
-        spawnPetForId(player, server, desiredId);
-        DEBOUNCE.put(pid, DEBOUNCE_TICKS);
+        // Same-tick spawn guard
+        if (!SPAWN_GUARD.add(pid)) return;
+        try {
+            // Set debounce *before* spawn so parallel calls in this tick bail out
+            DEBOUNCE.put(pid, DEBOUNCE_TICKS);
+            spawnPetForId(player, server, desiredId);
+        } finally {
+            SPAWN_GUARD.remove(pid);
+        }
     }
 
     /** Expose the currently tracked cosmetic pet (server side). */
@@ -389,11 +411,15 @@ public class PetManager {
 
         // 1) First preference: PlayerData capability
         var opt = PlayerData.get(owner);
+        CompoundTag extra = null;
+        int colorARGB = -1;
+        int variant = -1;
+
         if (opt.isPresent()) {
             var pd = opt.get();
 
-            // ----- Extra composite styles (prefer species-specific values first) -----
-            CompoundTag extra = pd.getEquippedStyleTag(PlayerData.TYPE_PETS);
+            // Extras
+            extra = pd.getEquippedStyleTag(PlayerData.TYPE_PETS);
             if (extra != null && !extra.isEmpty()) {
                 // Sheep: discrete wool index preferred
                 if (pet instanceof Sheep s && extra.contains("wool")) {
@@ -402,7 +428,7 @@ public class PetManager {
                     putEntityDyeNBT(pet, DyeColor.byId(idx));
                 }
 
-                // Horse/villager extra remain as before
+                // Horse/villager extra
                 if (pet instanceof net.minecraft.world.entity.animal.horse.Horse) {
                     applyHorseExtra(pet, extra);
                 } else if (pet instanceof com.pastlands.cosmeticslite.entity.CosmeticPetVillager v) {
@@ -413,13 +439,12 @@ public class PetManager {
                 }
             }
 
-            // ----- Color (ARGB) -----
-            int colorARGB = pd.getEquippedColor(PlayerData.TYPE_PETS); // -1 if unused
+            // Color
+            colorARGB = pd.getEquippedColor(PlayerData.TYPE_PETS); // -1 if unused
             if (colorARGB >= 0) {
                 DyeColor dye = argbToNearestDye(colorARGB);
                 if (dye != null) {
                     if (pet instanceof Sheep s) {
-                        // Only apply ARGB→dye if extra.wool was NOT present
                         if (extra == null || !extra.contains("wool")) {
                             s.setColor(dye);
                             putEntityDyeNBT(pet, dye);
@@ -431,8 +456,8 @@ public class PetManager {
                 }
             }
 
-            // ----- Variant (int path for entities with get/setVariant(int)) -----
-            int variant = pd.getEquippedVariant(PlayerData.TYPE_PETS); // -1 if unused
+            // Variant
+            variant = pd.getEquippedVariant(PlayerData.TYPE_PETS); // -1 if unused
             if (variant >= 0) {
                 trySetInt(pet, "setVariant", variant);
                 putEntityVariantNBT(pet, variant);
@@ -1051,5 +1076,45 @@ public class PetManager {
             case BLACK:      return new int[]{ 21,  21,  26};
         }
         return new int[]{255,255,255};
+    }
+
+    /* ====================================================================== */
+    /* Login warm-up stray vanilla horse cleanup (dev-safe)                   */
+    /* ====================================================================== */
+
+    /** Sweep away truly stray vanilla equines (Horse/Donkey/Mule) spawned very near the player. */
+    private static void cleanupStrayVanillaHorses(ServerLevel server, ServerPlayer player) {
+        final double r = 8.0D; // tight radius around the logging-in player
+        AABB box = new AABB(player.getX() - r, player.getY() - 4, player.getZ() - r,
+                            player.getX() + r, player.getY() + 4, player.getZ() + r);
+
+        List<Entity> nearby = server.getEntities((Entity) null, box, e ->
+                e instanceof net.minecraft.world.entity.animal.horse.AbstractHorse
+             && !(e instanceof com.pastlands.cosmeticslite.entity.CosmeticPetHorse)
+             && !(e instanceof com.pastlands.cosmeticslite.entity.CosmeticPetDonkey)
+             && !(e instanceof com.pastlands.cosmeticslite.entity.CosmeticPetMule)
+        );
+
+        for (Entity e : nearby) {
+            // never touch anything already tagged as ours
+            CompoundTag tag = e.getPersistentData().getCompound(ENBT_ROOT);
+            if (tag.hasUUID(ENBT_OWNER)) continue;
+
+            AbstractHorse ah = (AbstractHorse) e;
+
+            // super-conservative: only truly wild and clearly not someone's mount
+            boolean safeToRemove =
+                    !ah.isTamed() &&
+                    !ah.isSaddled() &&
+                    ah.getLeashHolder() == null &&
+                    !ah.isPersistenceRequired() &&
+                    !e.hasCustomName();
+
+            if (safeToRemove) {
+                e.discard();
+                LOGGER.debug("[PetManager] Cleared stray vanilla {} near {}",
+                        e.getClass().getSimpleName(), player.getGameProfile().getName());
+            }
+        }
     }
 }
