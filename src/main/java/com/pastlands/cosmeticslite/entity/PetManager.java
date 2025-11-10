@@ -76,6 +76,16 @@ public class PetManager {
     /** Interaction cooldown for “petting” w/ empty hand (blocks shears/buckets/etc.). */
     private static final int INTERACT_COOLDOWN_TICKS = 20 * 3; // 3s
 
+private static String normalizeVillagerTypeKey(String key) {
+    if (key == null || key.isBlank()) return "minecraft:plains";
+    ResourceLocation rl = ResourceLocation.tryParse(key);
+    if (rl == null || rl.getNamespace().isEmpty()) {
+        rl = ResourceLocation.fromNamespaceAndPath("minecraft", key);
+    }
+    return rl.toString();
+}
+	
+
     // ===== Dev-safe toggles for stray sweep =====
     private static final boolean SWEEP_STRAYS_ENABLED = false; // default OFF (safe for MP)
     private static final boolean SWEEP_STRAYS_DEV_ONLY = true; // only singleplayer unless you flip this
@@ -432,11 +442,39 @@ public class PetManager {
                 if (pet instanceof net.minecraft.world.entity.animal.horse.Horse) {
                     applyHorseExtra(pet, extra);
                 } else if (pet instanceof com.pastlands.cosmeticslite.entity.CosmeticPetVillager v) {
-                    int t  = extra.contains("type")       ? extra.getInt("type")       : 0;
-                    int pr = extra.contains("profession") ? extra.getInt("profession") : 0;
-                    int lv = extra.contains("level")      ? extra.getInt("level")      : 1;
-                    v.setCosmeticDataByOrdinal(t, pr, Math.max(1, Math.min(5, lv)));
-                }
+    // --- TYPE ONLY for Villager cosmetics ---
+    // Priority: extra["variant"] (string) -> extra["villager_type"] (RL) -> legacy extra["vill"].type
+    String typeKey = null;
+
+    // (1) UI string "variant" (normalize to RL)
+    if (extra.contains("variant")) {
+        typeKey = normalizeVillagerTypeKey(extra.getString("variant"));
+        extra.putString("villager_type", typeKey); // canonicalize for persistence
+        extra.remove("variant");                   // reduce ambiguity going forward
+    }
+
+    // (2) Canonical RL already present
+    if ((typeKey == null || typeKey.isEmpty()) && extra.contains("villager_type")) {
+        typeKey = normalizeVillagerTypeKey(extra.getString("villager_type"));
+        extra.putString("villager_type", typeKey); // ensure normalized form
+    }
+
+    // (3) Legacy compound "vill" with string fields
+    if ((typeKey == null || typeKey.isEmpty()) && extra.contains("vill")) {
+        CompoundTag vill = extra.getCompound("vill");
+        if (vill.contains("type")) {
+            typeKey = normalizeVillagerTypeKey(vill.getString("type"));
+        }
+        // We ignore profession/level for cosmetics now.
+        // Clean legacy after applying once to avoid future overrides.
+        extra.remove("vill");
+    }
+
+    if (typeKey != null && !typeKey.isEmpty()) {
+        v.setCosmeticTypeByKey(typeKey);
+    }
+}
+
             }
 
             // Color
@@ -540,14 +578,19 @@ public class PetManager {
             }
         }
 
-        // Villager (type/profession/level)
-        if (pet instanceof com.pastlands.cosmeticslite.entity.CosmeticPetVillager v) {
-            CompoundTag vill = new CompoundTag();
-            vill.putInt("type",       v.getCosmeticTypeOrdinal());
-            vill.putInt("profession", v.getCosmeticProfessionOrdinal());
-            vill.putInt("level",      Mth.clamp(v.getCosmeticLevel(), 1, 5));
-            vill.getAllKeys().forEach(k -> extra.put(k, vill.get(k)));
-        }
+// Villager (TYPE ONLY)
+if (pet instanceof com.pastlands.cosmeticslite.entity.CosmeticPetVillager v) {
+    // Capture canonical RL key for villager type
+    VillagerType cur = v.getVillagerData().getType();
+    ResourceLocation key = BuiltInRegistries.VILLAGER_TYPE.getKey(cur);
+    String typeRL = (key == null) ? "minecraft:plains" : key.toString();
+    extra.putString("villager_type", typeRL);
+
+    // Clean legacy fields if present
+    if (extra.contains("vill")) extra.remove("vill");
+    if (extra.contains("variant")) extra.remove("variant");
+}
+
 
         pd.setEquippedStyleTag(PlayerData.TYPE_PETS, extra);
     }
@@ -649,18 +692,23 @@ public class PetManager {
             if (h.isPresent()) { frog.setVariant(h.get().value()); return true; }
         }
 
-        // Villager (biome type)
-        if (pet instanceof net.minecraft.world.entity.npc.Villager villager) {
-            net.minecraft.resources.ResourceLocation rl = parseRL(k);
-            net.minecraft.resources.ResourceKey<net.minecraft.world.entity.npc.VillagerType> rkey =
-                    net.minecraft.resources.ResourceKey.create(net.minecraft.core.registries.Registries.VILLAGER_TYPE, rl);
-            java.util.Optional<net.minecraft.core.Holder.Reference<net.minecraft.world.entity.npc.VillagerType>> h =
-                    net.minecraft.core.registries.BuiltInRegistries.VILLAGER_TYPE.getHolder(rkey);
-            if (h.isPresent()) {
-                villager.setVillagerData(villager.getVillagerData().setType(h.get().value()));
-                return true;
-            }
-        }
+// Villager (biome type, TYPE ONLY; force NONE/1)
+if (pet instanceof net.minecraft.world.entity.npc.Villager villager) {
+    net.minecraft.resources.ResourceLocation rl = parseRL(k);
+    net.minecraft.resources.ResourceKey<net.minecraft.world.entity.npc.VillagerType> rkey =
+            net.minecraft.resources.ResourceKey.create(net.minecraft.core.registries.Registries.VILLAGER_TYPE, rl);
+    java.util.Optional<net.minecraft.core.Holder.Reference<net.minecraft.world.entity.npc.VillagerType>> h =
+            net.minecraft.core.registries.BuiltInRegistries.VILLAGER_TYPE.getHolder(rkey);
+    if (h.isPresent()) {
+        net.minecraft.world.entity.npc.VillagerData cur = villager.getVillagerData();
+        villager.setVillagerData(cur
+                .setType(h.get().value())
+                .setProfession(net.minecraft.world.entity.npc.VillagerProfession.NONE)
+                .setLevel(1));
+        return true;
+    }
+}
+
 
         // Mooshroom
         if (pet instanceof net.minecraft.world.entity.animal.MushroomCow cow) {

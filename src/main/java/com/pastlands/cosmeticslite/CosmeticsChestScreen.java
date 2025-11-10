@@ -1,4 +1,3 @@
-// src/main/java/com/pastlands/cosmeticslite/CosmeticsChestScreen.java
 package com.pastlands.cosmeticslite;
 
 import com.pastlands.cosmeticslite.client.state.ScreenState;
@@ -701,14 +700,15 @@ public class CosmeticsChestScreen extends Screen {
             // if (variantDropdown != null) variantDropdown.collapse();
         }
 
-        // If we just equipped a gadget, close the cosmetics screen and open the gadget list.
-        if ("gadgets".equals(type)) {
-            Minecraft mc = Minecraft.getInstance();
-            mc.execute(() -> {
-                mc.setScreen(null);                 // close this screen so the popup has focus
-                GadgetClientCommands.openGadgetList(true);
-            });
-        }
+       // If we just equipped a GADGET, close Cosmetics and arm the 2s countdown → fire → reopen flow
+if ("gadgets".equals(type)) {
+    Minecraft mc = Minecraft.getInstance();
+    mc.execute(() -> {
+        mc.setScreen(null); // close Cosmetics now
+        // 40 ticks ≈ 2 seconds (keep this buffer so it doesn't fire instantly)
+        GadgetClientCommands.scheduleUseFromCosmetics(newId, 40);
+    });
+}
     }
 
     private void onUnequipThisTab() {
@@ -1011,13 +1011,22 @@ public class CosmeticsChestScreen extends Screen {
         mannequinPane.render(g);
         particlePane.render(g);
 
-        // Render base widgets with masked mouse when dropdown overlaps
-        super.render(g, maskedX, maskedY, partialTicks);
+// Render base widgets with masked mouse when dropdown overlaps
+super.render(g, maskedX, maskedY, partialTicks);
 
-        // Render dropdown last, so it sits on top of all buttons
-        if (variantDropdown != null) {
-            variantDropdown.renderOnTop(g, mouseX, mouseY, partialTicks);
-        }
+// --- Cooldown label (only on Gadgets tab), centered above the bottom buttons ---
+if ("gadgets".equals(state.getActiveType())) {
+    // Buttons sit at baseY = bottom - 34; put the label just above them.
+    int centerX = (left + right) / 2;
+    int labelY  = (equipBtn != null ? equipBtn.getY() - 12 : bottom - 52);
+    renderGadgetCooldown(g, centerX, labelY);
+    }
+
+// Render dropdown last, so it sits on top of all buttons
+if (variantDropdown != null) {
+    variantDropdown.renderOnTop(g, mouseX, mouseY, partialTicks);
+}
+
     }
 
     private void drawCenteredShadow(GuiGraphics g, Component text, int centerX, int y, int color) {
@@ -1324,6 +1333,29 @@ public class CosmeticsChestScreen extends Screen {
         fillRounded(g, l - padFar,  t - padFar,  r + padFar,  b + padFar,  radius + 2, 0x11000000);
         fillRounded(g, l - padNear, t - padNear, r + padNear, b + padNear, radius,     0x22000000);
     }
+// --- Cooldown label for selected-or-equipped gadget ---
+private void renderGadgetCooldown(net.minecraft.client.gui.GuiGraphics g, int centerX, int y) {
+    // Prefer the currently-selected gadget on the grid (if any), else fall back to equipped.
+    net.minecraft.resources.ResourceLocation id = null;
+    if ("gadgets".equals(state.getActiveType())) {
+        com.pastlands.cosmeticslite.CosmeticDef sel = getCurrentlySelectedDef();
+        if (sel != null) id = sel.id();
+    }
+    if (id == null) {
+        id = com.pastlands.cosmeticslite.ClientState.getEquippedId("gadgets");
+    }
+    if (id == null) return;
+
+    long ms = com.pastlands.cosmeticslite.gadget.GadgetClientCommands.remainingMs(id);
+    String label = (ms > 0L)
+        ? "Cooldown: " + com.pastlands.cosmeticslite.gadget.GadgetClientCommands.prettyClock(ms)
+        : "Ready";
+    int color = (ms > 0L) ? 0xFFC9A86E : 0xFFB8F18B; // gold-ish vs mint-ish
+    int w = this.font.width(label);
+    g.drawString(this.font, label, centerX - (w / 2), y, color, false);
+}
+
+
 
     // ========================================================================
     // Accessors

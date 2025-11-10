@@ -5,6 +5,8 @@ import com.mojang.logging.LogUtils;
 import com.pastlands.cosmeticslite.entity.PetManager;
 import com.pastlands.cosmeticslite.entity.CosmeticPetParrot;
 import com.pastlands.cosmeticslite.PlayerData;
+import net.minecraft.world.entity.npc.VillagerProfession;
+import net.minecraft.world.entity.npc.VillagerData;
 import net.minecraft.core.Holder;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.core.registries.Registries;
@@ -86,12 +88,23 @@ PlayerData.get(player).ifPresent(pd -> {
         style.remove("villager_level");
         pd.setEquippedVariant(PlayerData.TYPE_PETS, -1);
         pd.setEquippedStyleTag(PlayerData.TYPE_PETS, style);
-    } else {
-        // EXPLICIT variant → persist the key
-        style.putString("variant", msg.variantKey.toLowerCase(Locale.ROOT));
-        // (Villager ordinals are handled by PetManager when present; we leave them if previously set.)
-        pd.setEquippedStyleTag(PlayerData.TYPE_PETS, style);
+} else {
+    // EXPLICIT variant → persist
+    String vkey = msg.variantKey.toLowerCase(Locale.ROOT);
+    style.putString("variant", vkey);
+
+    // If the selected/active pet is a Villager, canonicalize to villager_type (RL)
+    // and prefer it over the generic "variant" field.
+    Entity active = PetManager.getActivePet(player);
+    if (active instanceof Villager) {
+        String typeRL = normalizeVillagerTypeKey(vkey);
+        style.putString("villager_type", typeRL);
+        style.remove("variant");
     }
+
+    pd.setEquippedStyleTag(PlayerData.TYPE_PETS, style);
+}
+
 });
 
 // ✅ 2) Keep your existing PNBT flow for legacy/back-compat (optional)
@@ -125,7 +138,14 @@ PetManager.updatePlayerPet(player);
         root.putBoolean(PNBT_PET_RANDOM, on);
         p.getPersistentData().put(PNBT_ROOT, root);
     }
-
+private static String normalizeVillagerTypeKey(String key) {
+    if (key == null || key.isBlank()) return "minecraft:plains";
+    ResourceLocation rl = ResourceLocation.tryParse(key);
+    if (rl == null || rl.getNamespace().isEmpty()) {
+        rl = ResourceLocation.fromNamespaceAndPath("minecraft", key);
+    }
+    return rl.toString();
+}
     private static void scrubExplicitVariant(ServerPlayer p) {
         CompoundTag root = p.getPersistentData().getCompound(PNBT_ROOT);
         if (!root.isEmpty() && root.contains(PNBT_PET_VAR)) {
@@ -234,16 +254,23 @@ PetManager.updatePlayerPet(player);
             return;
         }
 
-        // Villager (biome type)
-        if (pet instanceof Villager villager) {
-            ResourceLocation rl = parseRL(key);
-            ResourceKey<net.minecraft.world.entity.npc.VillagerType> rkey =
+// Villager (biome type; force NONE/1 so profession/level never override the look)
+if (pet instanceof Villager villager) {
+    ResourceLocation rl = parseRL(key);
+    ResourceKey<net.minecraft.world.entity.npc.VillagerType> rkey =
         ResourceKey.create(Registries.VILLAGER_TYPE, rl);
-Optional<Holder.Reference<net.minecraft.world.entity.npc.VillagerType>> holder =
+    Optional<Holder.Reference<net.minecraft.world.entity.npc.VillagerType>> holder =
         BuiltInRegistries.VILLAGER_TYPE.getHolder(rkey);
-            holder.ifPresent(h -> villager.setVillagerData(villager.getVillagerData().setType(h.value())));
-            return;
-        }
+    holder.ifPresent(h -> {
+        VillagerData cur = villager.getVillagerData();
+        villager.setVillagerData(cur
+            .setType(h.value())
+            .setProfession(VillagerProfession.NONE)
+            .setLevel(1));
+    });
+    return;
+}
+
 
         // Mooshroom (enum)
         if (pet instanceof MushroomCow cow) {

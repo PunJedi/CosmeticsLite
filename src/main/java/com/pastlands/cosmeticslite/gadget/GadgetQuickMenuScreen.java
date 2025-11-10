@@ -166,7 +166,7 @@ public class GadgetQuickMenuScreen extends Screen {
                     // start local cooldown immediately
                     GadgetClientCommands.noteJustUsed(r.id());
                     // vanish menu now and arm a ~3s reopen (handled by GadgetClientCommands' client tick)
-                    GadgetClientCommands.armReopenAfterUse(true);
+                    GadgetClientCommands.armReopenAfterUse(r.id(), true);
                     onClose();
                     return true;
                 }
