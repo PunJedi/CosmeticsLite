@@ -14,6 +14,13 @@ import com.pastlands.cosmeticslite.network.PacketSetPetVariant;
 import com.pastlands.cosmeticslite.preview.MannequinPane;
 import com.pastlands.cosmeticslite.preview.ParticlePreviewPane;
 import com.pastlands.cosmeticslite.gadget.GadgetClientCommands;
+import com.mojang.blaze3d.systems.RenderSystem;
+import com.mojang.blaze3d.vertex.BufferBuilder;
+import com.mojang.blaze3d.vertex.DefaultVertexFormat;
+import com.mojang.blaze3d.vertex.Tesselator;
+import com.mojang.blaze3d.vertex.VertexFormat;
+import com.mojang.math.Axis;
+import net.minecraft.client.renderer.GameRenderer;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
@@ -25,6 +32,8 @@ import net.minecraft.network.chat.Component;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.phys.Vec3;
 import net.minecraft.util.FormattedCharSequence;
+
+import com.mojang.blaze3d.systems.RenderSystem; // for alpha tinting of the tiled panel texture
 
 import javax.annotation.Nullable;
 import java.util.*;
@@ -77,45 +86,65 @@ public class CosmeticsChestScreen extends Screen {
     }
 
 
-    // ===== Palette (ARGB) =====
-    private static final int COL_OUTER_RIM    = 0xFF2B2F36;
-    private static final int COL_PANEL_BASE   = 0xFF3C424A;
-    private static final int COL_BEVEL_ACCENT = 0xFF1F2429;
-    private static final int COL_PANEL_INNER  = 0xFF555B62;
+    // ===== Palette (ARGB) — Desaturated Industrial =====
+    // Graphite foundation with muted blue-gray accents and parchment text.
+    private static final int COL_OUTER_RIM    = 0xFF2A2A2E; // dark graphite frame
+    private static final int COL_PANEL_BASE   = 0xFF3A3A3F; // soft neutral base
+    private static final int COL_BEVEL_ACCENT = 0xE01F1F21; // ~88% opaque bevel
+    private static final int COL_PANEL_INNER  = 0xB3515156; // ~70% inner tone
 
-    private static final int COL_STRIP_OUTER  = 0xFF474E56;
-    private static final int COL_STRIP_INNER  = 0xFFB1B8BF;
+    // Tab strip — subdued steel-blue gradient for calm contrast
+    private static final int COL_STRIP_OUTER  = 0xFF494B4E; // cool neutral steel
+    private static final int COL_STRIP_INNER  = 0xFF8EA8BF; // dusty blue-gray inner
 
-    private static final int COL_GRID_RIM2    = 0xFF3A4149;
-    private static final int COL_GRID_RIM1    = 0xFF59616A;
-    private static final int COL_GRID_PLATE   = 0xFF4C4C4D;
+    // Grid frame — neutral metallic, unchanged for item contrast
+    private static final int COL_GRID_RIM2    = 0xFF3E3A34;
+    private static final int COL_GRID_RIM1    = 0xFF5A534A;
+    private static final int COL_GRID_PLATE   = 0xFF4A4744;
 
-    private static final int COL_PLAQUE_RIM   = 0xFF555C63;
-    private static final int COL_PLAQUE_BASE  = 0xFFC9CFD5;
-    private static final int COL_PLAQUE_INNER = 0xFFABABAB;
+    // Plaques (title + preview labels) — smooth industrial blues
+    private static final int COL_PLAQUE_RIM   = 0xFF3E4650; // darker rim for depth
+    private static final int COL_PLAQUE_BASE  = 0xFFB7C6D8; // pale bluish-steel base
+    private static final int COL_PLAQUE_INNER = 0xFF9BAFC0; // inner blue-gray accent
 
-    private static final int COL_TEXT_PRIMARY = 0xFF101317;
+    // Primary text — parchment warmth for readability
+    private static final int COL_TEXT_PRIMARY = 0xFFD7CFA8;
 
-    private static final int COL_SELECT_OUTER     = 0xFF4BA3FF;
-    private static final int COL_SELECT_INNER     = 0x801B5FC2;
-    private static final int COL_PENDING_OUTER    = 0xFFE0BD6A;
-    private static final int COL_PENDING_INNER    = 0x66E0BD6A;
-    private static final int HILITE_BORDER_THICK  = 1;
+    // Selection + pending highlights (kept neutral with subtle warmth)
+    private static final int COL_SELECT_OUTER  = 0xFF4BA3FF; // blue edge highlight
+    private static final int COL_SELECT_INNER  = 0x801B5FC2; // soft blue fill
+    private static final int COL_PENDING_OUTER = 0xFFE0BD6A; // brass tone highlight
+    private static final int COL_PENDING_INNER = 0x66E0BD6A;
+    private static final int HILITE_BORDER_THICK = 1;
 
-    private static final int COL_STATUS_TEXT      = 0xFFF0D060;
-    private static final int COL_ACTIVE_TAB_GLOW  = 0x401B5FC2;
+    // Status text + active tab glow (muted icy blue glow)
+    private static final int COL_STATUS_TEXT   = 0xFFF0D060;
+    private static final int COL_ACTIVE_TAB_GLOW = 0x403480C0; // subtle desaturated blue aura
 
     private static final int COL_SHADOW_NEAR = 0x22000000;
     private static final int COL_SHADOW_FAR  = 0x11000000;
 
-    private static final int COL_PREVIEW_RIM2   = COL_GRID_RIM2;
-    private static final int COL_PREVIEW_RIM1   = COL_GRID_RIM1;
-    private static final int COL_PREVIEW_PLATE  = 0xFF5A5F67;
+    // Preview well (neutral-warm for model contrast)
+    private static final int COL_PREVIEW_RIM2  = COL_GRID_RIM2;
+    private static final int COL_PREVIEW_RIM1  = COL_GRID_RIM1;
+    private static final int COL_PREVIEW_PLATE = 0xFF5A5550;
 
     // Optional custom PNG title (fallbacks to text if missing)
     private static final ResourceLocation TITLE_TEX =
             ResourceLocation.fromNamespaceAndPath(CosmeticsLite.MODID, "textures/gui/cosmetics_title.png");
     private static final int TITLE_TEX_W = 110, TITLE_TEX_H = 14;
+
+    // Subtle panel texture (32x32 tile), e.g. panel_text.png you added
+    private static final ResourceLocation PANEL_TEX =
+            ResourceLocation.fromNamespaceAndPath(CosmeticsLite.MODID, "textures/gui/panel_text.png");
+    private static final int PANEL_TILE = 32;
+
+    // --- Decorative rivets (BlueJeans Edition)
+    private static final int RIVET_SIZE       = 3;
+    private static final int RIVET_CORE_COLOR = 0xFFE3C27A; // warm brass
+    private static final int RIVET_RIM_COLOR  = 0xFF3B2E15; // deep bronze rim
+    private static final int RIVET_HILITE     = 0xFFFFE7A8; // soft top highlight
+    private static final int RIVET_SHADOW     = 0x66000000; // subtle drop shadow
 
     // ---- Derived at runtime ----
     private int left, top, right, bottom;
@@ -700,15 +729,15 @@ public class CosmeticsChestScreen extends Screen {
             // if (variantDropdown != null) variantDropdown.collapse();
         }
 
-       // If we just equipped a GADGET, close Cosmetics and arm the 2s countdown → fire → reopen flow
-if ("gadgets".equals(type)) {
-    Minecraft mc = Minecraft.getInstance();
-    mc.execute(() -> {
-        mc.setScreen(null); // close Cosmetics now
-        // 40 ticks ≈ 2 seconds (keep this buffer so it doesn't fire instantly)
-        GadgetClientCommands.scheduleUseFromCosmetics(newId, 40);
-    });
-}
+        // If we just equipped a GADGET, close Cosmetics and arm the 2s countdown → fire → reopen flow
+        if ("gadgets".equals(type)) {
+            Minecraft mc = Minecraft.getInstance();
+            mc.execute(() -> {
+                mc.setScreen(null); // close Cosmetics now
+                // 40 ticks ≈ 2 seconds (keep this buffer so it doesn't fire instantly)
+                GadgetClientCommands.scheduleUseFromCosmetics(newId, 40);
+            });
+        }
     }
 
     private void onUnequipThisTab() {
@@ -915,13 +944,30 @@ if ("gadgets".equals(type)) {
         this.lastMouseY = maskedY;
         this.lastPartial = partialTicks;
 
-        drawSoftRoundedShadow(g, left, top, right, bottom);
+// ======================= PANEL BACKGROUND =======================
+drawSoftRoundedShadow(g, left, top, right, bottom);
 
-        fillRounded(g, left - 2, top - 2, right + 2, bottom + 2, 8, COL_OUTER_RIM);
-        fillRounded(g, left,     top,     right,     bottom,     8, COL_PANEL_BASE);
-        fillRounded(g, left + 4, top + 4, right - 4, bottom - 4, 6, COL_BEVEL_ACCENT);
-        fillRounded(g, left + 6, top + 6, right - 6, bottom - 6, 6, COL_PANEL_INNER);
+// Outer frame and base
+fillRounded(g, left - 2, top - 2, right + 2, bottom + 2, 8, COL_OUTER_RIM);
+fillRounded(g, left,     top,     right,     bottom,     8, COL_PANEL_BASE);
 
+// Inner bevel and plate (flat tone first)
+fillRounded(g, left + 4, top + 4, right - 4, bottom - 4, 6, COL_BEVEL_ACCENT);
+fillRounded(g, left + 6, top + 6, right - 6, bottom - 6, 6, COL_PANEL_INNER);
+
+// Subtle tiled texture overlay — higher alpha so the pattern reads
+RenderSystem.enableBlend();
+RenderSystem.defaultBlendFunc();
+RenderSystem.setShaderColor(1f, 1f, 1f, 0.45f); // was ~0.28f; try 0.42–0.50
+blitTiled(g, PANEL_TEX, left + 6, top + 6, right - 6, bottom - 6, PANEL_TILE);
+RenderSystem.setShaderColor(1f, 1f, 1f, 1f);    // reset
+
+// Very light neutral "wash" to unify while keeping the texture visible
+// (12% white — brighten the pattern slightly without killing contrast)
+fillRounded(g, left + 6, top + 6, right - 6, bottom - 6, 6, 0x1FFFFFFF);
+
+
+        // ======================= HEADER PLAQUE =======================
         final int PLAQUE_MIN_W = 124;
         final int PLAQUE_H     = 16;
         final int SIDE_PAD     = 7;
@@ -949,6 +995,7 @@ if ("gadgets".equals(type)) {
             drawCenteredShadow(g, this.title, this.width / 2, plaqueT + 3, COL_TEXT_PRIMARY);
         }
 
+        // ======================= CONTENT =======================
         tabBar.render(g);
         grid.render(g, maskedX, maskedY, partialTicks);
 
@@ -1011,22 +1058,23 @@ if ("gadgets".equals(type)) {
         mannequinPane.render(g);
         particlePane.render(g);
 
-// Render base widgets with masked mouse when dropdown overlaps
-super.render(g, maskedX, maskedY, partialTicks);
+        // Render base widgets with masked mouse when dropdown overlaps
+        super.render(g, maskedX, maskedY, partialTicks);
 
-// --- Cooldown label (only on Gadgets tab), centered above the bottom buttons ---
-if ("gadgets".equals(state.getActiveType())) {
-    // Buttons sit at baseY = bottom - 34; put the label just above them.
-    int centerX = (left + right) / 2;
-    int labelY  = (equipBtn != null ? equipBtn.getY() - 12 : bottom - 52);
-    renderGadgetCooldown(g, centerX, labelY);
-    }
+        // --- Cooldown label (only on Gadgets tab), centered above the bottom buttons ---
+        if ("gadgets".equals(state.getActiveType())) {
+            // Buttons sit at baseY = bottom - 34; put the label just above them.
+            int centerX = (left + right) / 2;
+            int labelY  = (equipBtn != null ? equipBtn.getY() - 12 : bottom - 52);
+            renderGadgetCooldown(g, centerX, labelY);
+        }
 
-// Render dropdown last, so it sits on top of all buttons
-if (variantDropdown != null) {
-    variantDropdown.renderOnTop(g, mouseX, mouseY, partialTicks);
-}
-
+        // Render dropdown last, so it sits on top of all buttons
+        if (variantDropdown != null) {
+            variantDropdown.renderOnTop(g, mouseX, mouseY, partialTicks);
+        }
+		// Finally: draw the tiny corner gears absolutely last
+           drawCornerGears(g, left, top, right, bottom, partialTicks);
     }
 
     private void drawCenteredShadow(GuiGraphics g, Component text, int centerX, int y, int color) {
@@ -1042,6 +1090,121 @@ if (variantDropdown != null) {
         ResourceLocation eq = ClientState.getEquippedId("gadgets");
         return isAir(eq) ? null : eq;
     }
+// -------------------- Tiny rotating gears (corner ornaments) --------------------
+private static final int GEAR_COLOR_TEETH = 0xFFB7BFC8; // desaturated steel
+private static final int GEAR_COLOR_HUB   = 0xFF8EA8BF; // soft blue-gray
+
+/** Draw a simple 2D gear by alternating inner/outer radii around a circle. */
+private void drawGear(GuiGraphics g,
+                      float cx, float cy,
+                      float rInner, float rOuter,
+                      int teeth, float radians,
+                      int colorTeeth, int colorHub) {
+
+    // ---- sanity ----
+    if (teeth < 3) return;
+    if (rInner <= 0 || rOuter <= 0) return;
+    if (rInner >= rOuter) rInner = Math.max(1f, rOuter * 0.7f);
+
+    // ---- render state: draw above UI, with alpha, no culling ----
+    RenderSystem.disableDepthTest();
+    RenderSystem.enableBlend();
+    RenderSystem.defaultBlendFunc();
+    RenderSystem.disableCull();
+    RenderSystem.setShader(GameRenderer::getPositionColorShader);
+    RenderSystem.setShaderColor(1f, 1f, 1f, 1f);
+
+    var pose = g.pose();
+    pose.pushPose();
+    pose.translate(cx, cy, 0f);
+    pose.mulPose(Axis.ZP.rotation(radians)); // rotate around center
+
+    // --- teeth ring (triangle fan) ---
+    Tesselator t = Tesselator.getInstance();
+    BufferBuilder b = t.getBuilder();
+    b.begin(VertexFormat.Mode.TRIANGLE_FAN, DefaultVertexFormat.POSITION_COLOR);
+
+    // center
+    b.vertex(pose.last().pose(), 0f, 0f, 0f).color(
+            (colorTeeth >> 16) & 255,
+            (colorTeeth >>  8) & 255,
+            (colorTeeth      ) & 255,
+            (colorTeeth >>> 24)     ).endVertex();
+
+    // alternating inner/outer points
+    final int steps = teeth * 2;
+    for (int i = 0; i <= steps; i++) {
+        float frac = (float) i / (float) steps;
+        float ang  = (float) (frac * Math.PI * 2.0);
+        float r    = (i % 2 == 0) ? rOuter : rInner;
+        float x    = (float) (Math.cos(ang) * r);
+        float y    = (float) (Math.sin(ang) * r);
+        b.vertex(pose.last().pose(), x, y, 0f).color(
+                (colorTeeth >> 16) & 255,
+                (colorTeeth >>  8) & 255,
+                (colorTeeth      ) & 255,
+                (colorTeeth >>> 24)     ).endVertex();
+    }
+    t.end();
+
+    // --- hub disk (triangle fan) ---
+    float hub = Math.max(1f, rInner * 0.75f);
+    b.begin(VertexFormat.Mode.TRIANGLE_FAN, DefaultVertexFormat.POSITION_COLOR);
+    b.vertex(pose.last().pose(), 0f, 0f, 0f).color(
+            (colorHub >> 16) & 255,
+            (colorHub >>  8) & 255,
+            (colorHub      ) & 255,
+            (colorHub >>> 24)     ).endVertex();
+
+    final int hubSeg = 24;
+    for (int i = 0; i <= hubSeg; i++) {
+        float ang = (float) (i * (Math.PI * 2.0 / hubSeg));
+        float x   = (float) (Math.cos(ang) * hub);
+        float y   = (float) (Math.sin(ang) * hub);
+        b.vertex(pose.last().pose(), x, y, 0f).color(
+                (colorHub >> 16) & 255,
+                (colorHub >>  8) & 255,
+                (colorHub      ) & 255,
+                (colorHub >>> 24)     ).endVertex();
+    }
+    t.end();
+
+    // restore pose + GL state
+    pose.popPose();
+    RenderSystem.enableCull();
+    RenderSystem.disableBlend();
+    RenderSystem.enableDepthTest();
+}
+
+
+
+/** Convenience: draw four small corner gears. */
+private void drawCornerGears(GuiGraphics g, int left, int top, int right, int bottom, float partialTicks) {
+    // Position inset (stay inside rounded panel)
+    final int inset = 10;
+    float cx1 = left  + inset;
+    float cy1 = top   + inset;
+    float cx2 = right - inset;
+    float cy2 = top   + inset;
+    float cx3 = left  + inset;
+    float cy3 = bottom - inset;
+    float cx4 = right - inset;
+    float cy4 = bottom - inset;
+
+    // Size + animation speed
+    float rOuter = 4.0f;    // ~8 px across
+    float rInner = 2.8f;
+    int   teeth  = 8;
+
+    // rotate with time (counter-rotate pairs for visual interest)
+    long ticks = (minecraft != null && minecraft.level != null) ? minecraft.level.getGameTime() : 0L;
+    float base = (ticks + partialTicks) * 0.12f; // speed
+
+    drawGear(g, cx1, cy1, rInner, rOuter, teeth,  base,        GEAR_COLOR_TEETH, GEAR_COLOR_HUB);
+    drawGear(g, cx2, cy2, rInner, rOuter, teeth, -base * 1.1f, GEAR_COLOR_TEETH, GEAR_COLOR_HUB);
+    drawGear(g, cx3, cy3, rInner, rOuter, teeth, -base,        GEAR_COLOR_TEETH, GEAR_COLOR_HUB);
+    drawGear(g, cx4, cy4, rInner, rOuter, teeth,  base * 1.1f, GEAR_COLOR_TEETH, GEAR_COLOR_HUB);
+}
 
     private int rainbowColor(long ticks, float speed, float sat, float val) {
         float h = ((ticks % 3600L) / 3600f) * speed;
@@ -1333,28 +1496,66 @@ if (variantDropdown != null) {
         fillRounded(g, l - padFar,  t - padFar,  r + padFar,  b + padFar,  radius + 2, 0x11000000);
         fillRounded(g, l - padNear, t - padNear, r + padNear, b + padNear, radius,     0x22000000);
     }
-// --- Cooldown label for selected-or-equipped gadget ---
-private void renderGadgetCooldown(net.minecraft.client.gui.GuiGraphics g, int centerX, int y) {
-    // Prefer the currently-selected gadget on the grid (if any), else fall back to equipped.
-    net.minecraft.resources.ResourceLocation id = null;
-    if ("gadgets".equals(state.getActiveType())) {
-        com.pastlands.cosmeticslite.CosmeticDef sel = getCurrentlySelectedDef();
-        if (sel != null) id = sel.id();
-    }
-    if (id == null) {
-        id = com.pastlands.cosmeticslite.ClientState.getEquippedId("gadgets");
-    }
-    if (id == null) return;
 
-    long ms = com.pastlands.cosmeticslite.gadget.GadgetClientCommands.remainingMs(id);
-    String label = (ms > 0L)
-        ? "Cooldown: " + com.pastlands.cosmeticslite.gadget.GadgetClientCommands.prettyClock(ms)
-        : "Ready";
-    int color = (ms > 0L) ? 0xFFC9A86E : 0xFFB8F18B; // gold-ish vs mint-ish
-    int w = this.font.width(label);
-    g.drawString(this.font, label, centerX - (w / 2), y, color, false);
+    /** Tile a small texture across a rectangle. */
+    private static void blitTiled(GuiGraphics g, ResourceLocation tex,
+                                  int x0, int y0, int x1, int y1, int tile) {
+        for (int y = y0; y < y1; y += tile) {
+            int h = Math.min(tile, y1 - y);
+            for (int x = x0; x < x1; x += tile) {
+                int w = Math.min(tile, x1 - x);
+                g.blit(tex, x, y, 0, 0, w, h, tile, tile);
+            }
+        }
+    }
+
+    // --- Cooldown label for selected-or-equipped gadget ---
+    private void renderGadgetCooldown(net.minecraft.client.gui.GuiGraphics g, int centerX, int y) {
+        // Prefer the currently-selected gadget on the grid (if any), else fall back to equipped.
+        net.minecraft.resources.ResourceLocation id = null;
+        if ("gadgets".equals(state.getActiveType())) {
+            com.pastlands.cosmeticslite.CosmeticDef sel = getCurrentlySelectedDef();
+            if (sel != null) id = sel.id();
+        }
+        if (id == null) {
+            id = com.pastlands.cosmeticslite.ClientState.getEquippedId("gadgets");
+        }
+        if (id == null) return;
+
+        long ms = com.pastlands.cosmeticslite.gadget.GadgetClientCommands.remainingMs(id);
+        String label = (ms > 0L)
+            ? "Cooldown: " + com.pastlands.cosmeticslite.gadget.GadgetClientCommands.prettyClock(ms)
+            : "Ready";
+        int color = (ms > 0L) ? 0xFFC9A86E : 0xFFB8F18B; // gold-ish vs mint-ish
+        int w = this.font.width(label);
+        g.drawString(this.font, label, centerX - (w / 2), y, color, false);
+    }
+
+// Draw 4 decorative rivets just inside the main rounded frame.
+private static void drawRivets(GuiGraphics g, int left, int top, int right, int bottom) {
+    final int inset = 10; // distance from the outer frame
+
+    int[][] corners = new int[][]{
+        {left  + inset, top    + inset},   // top-left
+        {right - inset, top    + inset},   // top-right
+        {left  + inset, bottom - inset},   // bottom-left
+        {right - inset, bottom - inset}    // bottom-right
+    };
+
+    for (int[] c : corners) {
+        int cx = c[0], cy = c[1];
+
+        // Shadow ring
+        g.fill(cx - RIVET_SIZE - 1, cy - RIVET_SIZE,     cx + RIVET_SIZE + 1, cy + RIVET_SIZE + 1, RIVET_SHADOW);
+        // Outer rim
+        g.fill(cx - RIVET_SIZE,     cy - RIVET_SIZE,     cx + RIVET_SIZE,     cy + RIVET_SIZE,     RIVET_RIM_COLOR);
+        // Core
+        g.fill(cx - (RIVET_SIZE - 1), cy - (RIVET_SIZE - 1),
+               cx + (RIVET_SIZE - 1), cy + (RIVET_SIZE - 1), RIVET_CORE_COLOR);
+        // Highlight (upper-left quadrant)
+        g.fill(cx - (RIVET_SIZE - 1), cy - (RIVET_SIZE - 1), cx, cy, RIVET_HILITE);
+    }
 }
-
 
 
     // ========================================================================
