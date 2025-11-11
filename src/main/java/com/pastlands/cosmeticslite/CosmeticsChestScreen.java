@@ -45,6 +45,24 @@ import java.util.*;
  * GADGETS tab: shows pretty gadget name + description; no mannequin gadget FX preview.
  */
 public class CosmeticsChestScreen extends Screen {
+// --- Menu hold for active gadget FX (local to this screen) ---
+private static boolean HOLD_REGISTERED = false;
+private static int ACTIVE_HOLDS = 0;
+
+static {
+    if (!HOLD_REGISTERED) {
+        HOLD_REGISTERED = true;
+        com.pastlands.cosmeticslite.gadget.GadgetNet.ClientMenuHold.register(new com.pastlands.cosmeticslite.gadget.GadgetNet.ClientMenuHold.Listener() {
+            @Override public void onHoldStart(String id) { ACTIVE_HOLDS++; }
+            @Override public void onHoldEnd(String id)   { if (ACTIVE_HOLDS > 0) ACTIVE_HOLDS--; }
+        });
+    }
+}
+
+/** Only let the screen auto-return when no gadget effect is holding it. */
+private static boolean canAutoReturn() {
+    return ACTIVE_HOLDS == 0;
+}
 
     // ---- Panel size ----
     private static final int GUI_WIDTH  = 392;

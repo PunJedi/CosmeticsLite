@@ -9,6 +9,9 @@ import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.sounds.SoundEvents;
+import net.minecraftforge.common.MinecraftForge;
+import net.minecraftforge.event.TickEvent;
+import net.minecraftforge.eventbus.api.SubscribeEvent;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -17,14 +20,14 @@ import java.util.Map;
 /**
  * Simple mouse-grabbing gadget picker.
  * - Opened by /glist or /gadget list.
- * - On click: equips → uses → closes immediately; auto-reopens ~3s later (driven by GadgetClientCommands).
+ * - On click: equips → uses → closes immediately; auto-reopens timed to the gadget's duration_ms (+ pad).
  * - Rows show LIVE cooldown text (mm:ss) using GadgetClientCommands.remainingMs().
  */
 public class GadgetQuickMenuScreen extends Screen {
 
     /** id -> (pretty name, short desc). Provided by GadgetClientCommands.prettyMap(). */
     private final Map<String, GadgetClientCommands.Pretty> prettyMap;
-    /** Kept for signature compatibility; reopen timing is driven by GadgetClientCommands. */
+    /** Kept for signature compatibility; no longer used for timing. */
     private final boolean reopenAfterUse;
 
     private int left, top, widthPx, heightPx;
@@ -88,7 +91,7 @@ public class GadgetQuickMenuScreen extends Screen {
     @Override
     public void tick() {
         super.tick();
-        // nothing special here; labels re-render each frame from remainingMs()
+        // labels re-render each frame from remainingMs()
     }
 
     @Override
@@ -163,10 +166,14 @@ public class GadgetQuickMenuScreen extends Screen {
                 GadgetClientCommands.ensureEquippedBeforeUse(r.id());
 
                 if (tryUse(r.id())) {
-                    // start local cooldown immediately
+                    // Start local cooldown immediately
                     GadgetClientCommands.noteJustUsed(r.id());
-                    // vanish menu now and arm a ~3s reopen (handled by GadgetClientCommands' client tick)
-                    GadgetClientCommands.armReopenAfterUse(r.id(), true);
+
+                    // Compute hold based on JSON + pad, then arm local reopen
+                    int holdMs = computeHoldFor(r.id());
+                    Reopener.arm(holdMs, prettyMap);
+
+                    // Close now (mouse recaptured in onClose)
                     onClose();
                     return true;
                 }
@@ -193,9 +200,65 @@ public class GadgetQuickMenuScreen extends Screen {
         return true;
     }
 
+    private int computeHoldFor(ResourceLocation id) {
+        CosmeticDef def = CosmeticsRegistry.get(id);
+        if (def == null) return 220; // tiny fallback
+        // Use JSON-aware helper: duration_ms (preferred) + small pad
+        return GadgetTiming.holdMillisFor(def.properties());
+    }
+
     @Override
     public void onClose() {
         super.onClose();
         if (this.minecraft != null) this.minecraft.mouseHandler.grabMouse();
+    }
+
+    // --------------------------------------------------------------------------------------------
+    // Local reopen scheduler (client-only, tiny, no spam). Times menu return to effect duration.
+    // --------------------------------------------------------------------------------------------
+    private static final class Reopener {
+        private static boolean registered = false;
+        private static long reopenAtMs = -1L;
+        private static Map<String, GadgetClientCommands.Pretty> snapshotPretty = null;
+
+        static void arm(int delayMs, Map<String, GadgetClientCommands.Pretty> prettyMap) {
+            if (delayMs <= 0) delayMs = 200;
+            long now = System.currentTimeMillis();
+            reopenAtMs = now + delayMs;
+            snapshotPretty = prettyMap;
+            ensureRegistered();
+        }
+
+        private static void ensureRegistered() {
+            if (registered) return;
+            synchronized (Reopener.class) {
+                if (registered) return;
+                MinecraftForge.EVENT_BUS.register(TickListener.INSTANCE);
+                registered = true;
+            }
+        }
+
+        private enum TickListener {
+            INSTANCE;
+
+            @SubscribeEvent
+            public void onClientTick(TickEvent.ClientTickEvent e) {
+                if (e.phase != TickEvent.Phase.END) return;
+                if (reopenAtMs < 0L) return;
+
+                long now = System.currentTimeMillis();
+                if (now < reopenAtMs) return;
+
+                // Time to reopen
+                Minecraft mc = Minecraft.getInstance();
+                if (mc != null) {
+                    // Only reopen if player is in-game and no other blocking screen is up (e.g., pause menu still OK).
+                    mc.setScreen(new GadgetQuickMenuScreen(snapshotPretty, true));
+                }
+                // Clear the arm
+                reopenAtMs = -1L;
+                snapshotPretty = null;
+            }
+        }
     }
 }

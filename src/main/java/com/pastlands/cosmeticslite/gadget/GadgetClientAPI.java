@@ -1,12 +1,15 @@
 // src/main/java/com/pastlands/cosmeticslite/gadget/GadgetClientAPI.java
 package com.pastlands.cosmeticslite.gadget;
 
+import com.pastlands.cosmeticslite.CosmeticDef;
+import com.pastlands.cosmeticslite.CosmeticsRegistry;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.resources.ResourceLocation;
 
 import java.lang.reflect.Method;
-import java.util.*;
+import java.util.Map;
+import java.util.OptionalInt;
 import java.util.function.Supplier;
 
 /**
@@ -23,12 +26,17 @@ import java.util.function.Supplier;
  *  - We DO NOT fall back to server-side "use" from preview calls (no cooldown consumption).
  *  - Reflection lookups are cached after the first resolution.
  *
- * Mannequin anchor resolution:
- *  - Primary: an optional supplier provided by the UI via setMannequinSupplier(...)
- *  - Fallback (reflection): try static methods on known preview classes:
+ * JSON-awareness (no side effects):
+ *  - jsonDurationMs(id) / jsonCooldownMs(id): read overrides from per-gadget JSON (if present).
+ *  - hasJsonOverride(id): true if JSON declared a 'pattern' (our hybrid path is active for the gadget).
+ *  - effectiveDurationMs(id, fallback): returns JSON override if present, else fallback.
+ *  - effectiveCooldownMs(id, fallback): returns JSON override if present, else fallback.
+ *
+ * Mannequin anchor resolution hierarchy:
+ *  - Primary: supplier injected via setMannequinSupplier(...)
+ *  - Fallback: reflection on known preview classes:
  *        com.pastlands.cosmeticslite.preview.PreviewResolver#getMannequin()
  *        com.pastlands.cosmeticslite.preview.MannequinPane#getMannequin()
- *    These are attempted without adding a hard compile-time dependency.
  */
 public final class GadgetClientAPI {
 
@@ -48,7 +56,7 @@ public final class GadgetClientAPI {
     }
 
     // ---------------------------------------------------------------------
-    // Public surface
+    // Public surface: server-authoritative activation
     // ---------------------------------------------------------------------
 
     /**
@@ -58,44 +66,37 @@ public final class GadgetClientAPI {
     public static void useGadgetFromMenu(ResourceLocation gadgetId) {
         if (gadgetId == null || isAir(gadgetId)) return;
 
-        var mc = Minecraft.getInstance();
+        Minecraft mc = Minecraft.getInstance();
         if (mc == null || mc.player == null) return;
 
         var ch = com.pastlands.cosmeticslite.gadget.GadgetNet.channel();
-        if (ch == null) {
-            return; // never crash UI if init ordering is odd
-        }
+        if (ch == null) return; // never crash UI if init ordering is odd
+
         ch.sendToServer(new com.pastlands.cosmeticslite.gadget.GadgetNet.UseGadgetC2S(gadgetId));
     }
 
-    /**
-     * Best-effort client-only preview around the real player, with default sound ON.
-     */
+    // ---------------------------------------------------------------------
+    // Public surface: client-only previews
+    // ---------------------------------------------------------------------
+
+    /** Best-effort client-only preview around the real player, with default sound ON. */
     public static boolean preview(ResourceLocation gadgetId) {
         return preview(gadgetId, true);
     }
 
-    /**
-     * Best-effort client-only preview around the real player.
-     */
+    /** Best-effort client-only preview around the real player. */
     public static boolean preview(ResourceLocation gadgetId, boolean withSound) {
         if (gadgetId == null || isAir(gadgetId)) return false;
 
-        var mc = Minecraft.getInstance();
+        Minecraft mc = Minecraft.getInstance();
         LocalPlayer player = (mc != null) ? mc.player : null;
         if (mc == null || player == null) return false;
 
         // Attempt gadget mod generic preview (signature-flexible).
-        if (PreviewBridge.invokeGenericPreview(mc, player, gadgetId, withSound)) {
-            return true;
-        }
-        return false;
+        return PreviewBridge.invokeGenericPreview(mc, player, gadgetId, withSound);
     }
 
-    /**
-     * Best-effort client-only preview anchored to the GUI mannequin, with default sound ON.
-     * Falls back to player-centric preview if mannequin not available.
-     */
+    /** Best-effort client-only preview anchored to the GUI mannequin, with default sound ON. */
     public static boolean previewOnMannequin(ResourceLocation gadgetId) {
         return previewOnMannequin(gadgetId, true);
     }
@@ -107,7 +108,7 @@ public final class GadgetClientAPI {
     public static boolean previewOnMannequin(ResourceLocation gadgetId, boolean withSound) {
         if (gadgetId == null || isAir(gadgetId)) return false;
 
-        var mc = Minecraft.getInstance();
+        Minecraft mc = Minecraft.getInstance();
         if (mc == null) return false;
 
         LocalPlayer mannequin = getMannequin();
@@ -123,6 +124,63 @@ public final class GadgetClientAPI {
 
         // Fallback to normal player-centric preview
         return preview(gadgetId, withSound);
+    }
+
+    // ---------------------------------------------------------------------
+    // JSON-aware helpers (no allocations on hot paths beyond minimal map lookups)
+    // ---------------------------------------------------------------------
+
+    /** Returns true if this gadget has a JSON override active (pattern present). */
+    public static boolean hasJsonOverride(ResourceLocation gadgetId) {
+        Map<String, String> p = propsFor(gadgetId);
+        if (p == null) return false;
+        String pattern = p.get("pattern");
+        return pattern != null && !pattern.isEmpty();
+    }
+
+    /** Optional JSON duration override (ms), clamped to safe range if present. */
+    public static OptionalInt jsonDurationMs(ResourceLocation gadgetId) {
+        int val = parseIntProp(gadgetId, "duration_ms", -1, 100, 2500);
+        return (val >= 0) ? OptionalInt.of(val) : OptionalInt.empty();
+    }
+
+    /** Optional JSON cooldown override (ms), clamped to safe range if present. */
+    public static OptionalInt jsonCooldownMs(ResourceLocation gadgetId) {
+        int val = parseIntProp(gadgetId, "cooldown_ms", -1, 200, 6000);
+        return (val >= 0) ? OptionalInt.of(val) : OptionalInt.empty();
+    }
+
+    /** Returns JSON duration if present, otherwise the provided fallback. */
+    public static int effectiveDurationMs(ResourceLocation gadgetId, int fallback) {
+        int val = parseIntProp(gadgetId, "duration_ms", -1, 100, 2500);
+        return (val >= 0) ? val : fallback;
+    }
+
+    /** Returns JSON cooldown if present, otherwise the provided fallback. */
+    public static int effectiveCooldownMs(ResourceLocation gadgetId, int fallback) {
+        int val = parseIntProp(gadgetId, "cooldown_ms", -1, 200, 6000);
+        return (val >= 0) ? val : fallback;
+    }
+
+    private static Map<String, String> propsFor(ResourceLocation id) {
+        if (id == null) return null;
+        CosmeticDef def = CosmeticsRegistry.get(id);
+        return (def != null) ? def.properties() : null; // String->String bag populated by GadgetPresetReloader
+    }
+
+    private static int parseIntProp(ResourceLocation id, String key, int missing, int min, int max) {
+        Map<String, String> p = propsFor(id);
+        if (p == null) return missing;
+        String s = p.get(key);
+        if (s == null || s.isEmpty()) return missing;
+        try {
+            int v = Integer.parseInt(s.trim());
+            if (v < min) v = min;
+            if (v > max) v = max;
+            return v;
+        } catch (Exception ignored) {
+            return missing;
+        }
     }
 
     // ---------------------------------------------------------------------
@@ -213,7 +271,7 @@ public final class GadgetClientAPI {
      *  (G) (Minecraft, LocalPlayer, ResourceLocation)
      *  (H) (Minecraft, LocalPlayer, ResourceLocation, boolean)
      *
-     * We’ll adapt provided (mc, anchor, id, withSound) to whatever the method expects.
+     * We adapt provided (mc, anchor, id, withSound) to whatever the method expects.
      */
     private static final class PreviewBridge {
         private static final String[] CANDIDATE_CLASSES = new String[] {
