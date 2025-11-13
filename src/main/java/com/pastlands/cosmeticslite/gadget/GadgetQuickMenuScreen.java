@@ -228,6 +228,18 @@ public class GadgetQuickMenuScreen extends Screen {
             snapshotPretty = prettyMap;
             ensureRegistered();
         }
+        
+        /** Check if menu should wait for gadget hold to clear. */
+        private static boolean shouldWaitForHold() {
+            try {
+                Class<?> cls = Class.forName("com.pastlands.cosmeticslite.gadget.GadgetNet$ClientMenuHold");
+                var m = cls.getDeclaredMethod("isHolding");
+                m.setAccessible(true);
+                Object v = m.invoke(null);
+                return (v instanceof Boolean) && (Boolean) v;
+            } catch (Throwable ignored) {}
+            return false;
+        }
 
         private static void ensureRegistered() {
             if (registered) return;
@@ -248,6 +260,13 @@ public class GadgetQuickMenuScreen extends Screen {
 
                 long now = System.currentTimeMillis();
                 if (now < reopenAtMs) return;
+
+                // Check if gadget effect is still holding the menu
+                if (shouldWaitForHold()) {
+                    // Wait a bit more (check again next tick)
+                    reopenAtMs = now + 50; // Check again in 50ms
+                    return;
+                }
 
                 // Time to reopen
                 Minecraft mc = Minecraft.getInstance();

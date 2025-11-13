@@ -104,6 +104,11 @@ if (state == null || !ScreenState.TYPE_PETS.equals(state.getActiveType())) {
         Entity cached = PET_CACHE.get(player);
 
         if (cached == null || !cached.getType().equals(entityType)) {
+            // Discard old entity if it exists and type changed
+            if (cached != null && !cached.getType().equals(entityType)) {
+                cached.discard();
+            }
+            
             Level level = player.level();
             if (level == null) return null;
 

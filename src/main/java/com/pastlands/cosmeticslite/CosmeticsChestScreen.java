@@ -691,10 +691,23 @@ private static boolean canAutoReturn() {
         grid.setData(src);
         grid.setCurrentPage(state.getCurrentPage());
 
-        // Prevent pre-selection highlight on gadgets tab
+        // For gadgets: if something is equipped, auto-select it so the equip button works
         if ("gadgets".equals(state.getActiveType())) {
-            state.clearSelection("gadgets");
-            grid.setSelectedGlobalIndex(-1);
+            ResourceLocation equippedGadget = ClientState.getEquippedId("gadgets");
+            if (!isAir(equippedGadget)) {
+                // Find the equipped gadget in the list and select it
+                int equippedIndex = findEquippedIndexIn(src, "gadgets");
+                if (equippedIndex >= 0) {
+                    state.setSelectedIndex("gadgets", equippedIndex);
+                    grid.setSelectedGlobalIndex(equippedIndex);
+                } else {
+                    state.clearSelection("gadgets");
+                    grid.setSelectedGlobalIndex(-1);
+                }
+            } else {
+                state.clearSelection("gadgets");
+                grid.setSelectedGlobalIndex(-1);
+            }
         } else {
             grid.setSelectedGlobalIndex(state.getSelectedIndex(state.getActiveType()));
         }
@@ -726,13 +739,26 @@ private static boolean canAutoReturn() {
         ResourceLocation currentId = ClientState.getEquippedId(type);
 
         // --- FIX: send only ONE equip packet. Do NOT pre-clear. ---
-        if (isAir(newId) || newId.equals(currentId)) {
+        if (isAir(newId)) {
             // nothing to do
             return;
         }
-
-        PacketEquipRequest.send(type, newId, -1, -1, new CompoundTag());
-        ClientState.setEquippedId(type, newId);
+        
+        // For gadgets: allow re-equipping the same gadget to fire it again (if not on cooldown)
+        // For other types: skip if already equipped
+        boolean isReEquip = !isAir(currentId) && newId.equals(currentId);
+        if (isReEquip && !"gadgets".equals(type)) {
+            // For non-gadgets, skip if already equipped
+            return;
+        }
+        
+        // For gadgets: if re-equipping, skip sending equip packet (already equipped)
+        // Just update UI and proceed to fire logic
+        if (!isReEquip || !"gadgets".equals(type)) {
+            // Only send equip packet if it's a new equip (not re-equipping gadgets)
+            PacketEquipRequest.send(type, newId, -1, -1, new CompoundTag());
+            ClientState.setEquippedId(type, newId);
+        }
 
         state.clearAllHighlights();
         rebuildGrid();
@@ -747,13 +773,34 @@ private static boolean canAutoReturn() {
             // if (variantDropdown != null) variantDropdown.collapse();
         }
 
-        // If we just equipped a GADGET, close Cosmetics and arm the 2s countdown → fire → reopen flow
+        // If we just equipped a GADGET, close menu and fire (cooldown check happens in scheduleUseFromCosmetics)
         if ("gadgets".equals(type)) {
             Minecraft mc = Minecraft.getInstance();
+            // Store the gadget ID and check cooldown after closing menu
+            final ResourceLocation gadgetId = newId;
+            // Close menu first, then check cooldown and fire
+            mc.setScreen(null);
+            // Use a small delay to ensure menu is fully closed before checking cooldown
             mc.execute(() -> {
-                mc.setScreen(null); // close Cosmetics now
-                // 40 ticks ≈ 2 seconds (keep this buffer so it doesn't fire instantly)
-                GadgetClientCommands.scheduleUseFromCosmetics(newId, 40);
+                // Check cooldown and fire (or show message and reopen if on cooldown)
+                long cooldownRemaining = GadgetClientCommands.remainingMs(gadgetId);
+                if (cooldownRemaining > 0L) {
+                    // On cooldown - show message and reopen menu
+                    if (mc.player != null) {
+                        mc.player.displayClientMessage(
+                                net.minecraft.network.chat.Component.literal("Gadget on cooldown: " + GadgetClientCommands.prettyClock(cooldownRemaining)),
+                                true
+                        );
+                    }
+                    // Reopen menu after a brief delay
+                    mc.execute(() -> {
+                        mc.setScreen(new CosmeticsChestScreen());
+                    });
+                } else {
+                    // Not on cooldown - fire the gadget
+                    // 40 ticks ≈ 2 seconds (keep this buffer so it doesn't fire instantly)
+                    GadgetClientCommands.scheduleUseFromCosmetics(gadgetId, 40);
+                }
             });
         }
     }
@@ -818,7 +865,7 @@ private static boolean canAutoReturn() {
         return -1;
     }
 
-    private void updateActionButtons() {
+    public void updateActionButtons() {
         if (equipBtn == null || unequipBtn == null || clearBtn == null) return;
 
         String type = state.getActiveType();
@@ -829,8 +876,19 @@ private static boolean canAutoReturn() {
         ResourceLocation equippedId = ClientState.getEquippedId(type);
         boolean selectionIsEquipped = selected != null && !isAir(equippedId) && selected.id().equals(equippedId);
 
-        // Equip: active if something is selected and it’s not already equipped
-        equipBtn.active = selected != null && !selectionIsEquipped;
+        // Equip: active if something is selected
+        // For gadgets: allow re-equipping to fire again (if not on cooldown)
+        // For other types: only active if not already equipped
+        if (selected == null) {
+            equipBtn.active = false;
+        } else if ("gadgets".equals(type)) {
+            // For gadgets: button is always active if something is selected
+            // It will fire the gadget if not on cooldown, or show cooldown message if it is
+            equipBtn.active = true;
+        } else {
+            // For other types: only active if not already equipped
+            equipBtn.active = !selectionIsEquipped;
+        }
 
         // Clear Equipped: active only if anything is equipped across categories
         boolean anyEquipped = false;
@@ -921,11 +979,20 @@ private static boolean canAutoReturn() {
     // ========================================================================
     // Tick & Render
     // ========================================================================
+    private int buttonUpdateCounter = 0;
+    
     @Override
     public void tick() {
         super.tick();
         if (particlePane != null) particlePane.tick();
         if (mannequinPane != null) mannequinPane.tick();
+
+        // Update button states periodically (every 10 ticks) to reflect cooldown changes
+        buttonUpdateCounter++;
+        if (buttonUpdateCounter >= 10) {
+            buttonUpdateCounter = 0;
+            updateActionButtons();
+        }
 
         // Watchdog: keep PETS side-panel in sync even if a UI path missed a refresh.
         if ("pets".equals(state.getActiveType())) {

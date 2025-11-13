@@ -1,12 +1,19 @@
 // src/main/java/com/pastlands/cosmeticslite/gadget/GadgetNet.java
 package com.pastlands.cosmeticslite.gadget;
 
+import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 import com.pastlands.cosmeticslite.CosmeticDef;
 import com.pastlands.cosmeticslite.CosmeticsLite;
 import com.pastlands.cosmeticslite.CosmeticsRegistry;
+import org.joml.Vector3f;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
+import net.minecraft.core.particles.DustParticleOptions;
 import net.minecraft.core.particles.ParticleTypes;
+import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.network.FriendlyByteBuf;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.level.ServerLevel;
@@ -24,7 +31,6 @@ import net.minecraftforge.network.NetworkEvent;
 import net.minecraftforge.network.NetworkRegistry;
 import net.minecraftforge.network.PacketDistributor;
 import net.minecraftforge.network.simple.SimpleChannel;
-import net.minecraft.core.registries.BuiltInRegistries;
 
 import javax.annotation.Nullable;
 import java.util.*;
@@ -39,6 +45,11 @@ import java.util.function.Supplier;
  * Hybrid model:
  * - Hardwired actions remain as baseline.
  * - If a gadget JSON includes 'pattern', GenericGadgetAction takes over for that id.
+ *
+ * Uniform cooldown policy:
+ * - ALL gadgets (hardwired or JSON-driven) use a global 45s server cooldown.
+ * - Client additionally debounces visual play for the same gadget id for 45s
+ *   to prevent any accidental repeats from key-repeat or UI re-triggers.
  */
 public final class GadgetNet {
     private GadgetNet() {}
@@ -50,6 +61,9 @@ public final class GadgetNet {
     private static SimpleChannel CHANNEL;
     private static int NEXT_ID = 0;
     private static boolean BOOTSTRAPPED = false;
+
+    /** Global uniform cooldown: 45 seconds in ticks. */
+    private static final int GLOBAL_COOLDOWN_TICKS = 45 * 20;
 
     private static int id() { return NEXT_ID++; }
 
@@ -110,7 +124,9 @@ public final class GadgetNet {
                 IGadgetAction action = GadgetActions.get(msg.gadgetId());
                 if (action == null) return;
 
-                int cooldown = action.cooldownTicks(sp, def);
+                // --- Uniform 45s cooldown across ALL gadgets ---
+                int cooldown = GLOBAL_COOLDOWN_TICKS;
+
                 if (!checkAndStampCooldown(sp, msg.gadgetId, now, cooldown)) return;
 
                 long seed = sp.getRandom().nextLong();
@@ -121,7 +137,8 @@ public final class GadgetNet {
                 try { action.serverPerform(sp, origin, dir, seed); } catch (Throwable ignored) {}
 
                 channel().send(PacketDistributor.TRACKING_ENTITY_AND_SELF.with(() -> sp),
-                        new PlayGadgetFxS2C(msg.gadgetId, origin, dir, seed));
+    new PlayGadgetFxS2C(msg.gadgetId, origin, dir, seed, cooldown));
+
             });
             c.setPacketHandled(true);
         }
@@ -130,29 +147,31 @@ public final class GadgetNet {
     // ------------------------------------------------------------------------
     // S2C: play gadget FX
     // ------------------------------------------------------------------------
-    public static record PlayGadgetFxS2C(ResourceLocation gadgetId,
-                                         double x, double y, double z,
-                                         float dx, float dy, float dz,
-                                         long seed) {
+public static record PlayGadgetFxS2C(ResourceLocation gadgetId,
+                                     double x, double y, double z,
+                                     float dx, float dy, float dz,
+                                     long seed,
+                                     int cooldownTicks) {
 
-        public PlayGadgetFxS2C(ResourceLocation id, Vec3 origin, Vec3 dir, long seed) {
-            this(id, origin.x, origin.y, origin.z, (float) dir.x, (float) dir.y, (float) dir.z, seed);
-        }
+    public PlayGadgetFxS2C(ResourceLocation id, Vec3 origin, Vec3 dir, long seed, int cooldownTicks) {
+        this(id, origin.x, origin.y, origin.z, (float) dir.x, (float) dir.y, (float) dir.z, seed, cooldownTicks);
+    }
+    public static void encode(PlayGadgetFxS2C msg, FriendlyByteBuf buf) {
+        buf.writeResourceLocation(msg.gadgetId);
+        buf.writeDouble(msg.x); buf.writeDouble(msg.y); buf.writeDouble(msg.z);
+        buf.writeFloat(msg.dx); buf.writeFloat(msg.dy); buf.writeFloat(msg.dz);
+        buf.writeLong(msg.seed);
+        buf.writeVarInt(msg.cooldownTicks);
+    }
+    public static PlayGadgetFxS2C decode(FriendlyByteBuf buf) {
+        ResourceLocation id = buf.readResourceLocation();
+        double x = buf.readDouble(), y = buf.readDouble(), z = buf.readDouble();
+        float dx = buf.readFloat(), dy = buf.readFloat(), dz = buf.readFloat();
+        long seed = buf.readLong();
+        int cooldown = buf.readVarInt();
+        return new PlayGadgetFxS2C(id, x, y, z, dx, dy, dz, seed, cooldown);
+    }
 
-        public static void encode(PlayGadgetFxS2C msg, FriendlyByteBuf buf) {
-            buf.writeResourceLocation(msg.gadgetId);
-            buf.writeDouble(msg.x); buf.writeDouble(msg.y); buf.writeDouble(msg.z);
-            buf.writeFloat(msg.dx); buf.writeFloat(msg.dy); buf.writeFloat(msg.dz);
-            buf.writeLong(msg.seed);
-        }
-
-        public static PlayGadgetFxS2C decode(FriendlyByteBuf buf) {
-            ResourceLocation id = buf.readResourceLocation();
-            double x = buf.readDouble(), y = buf.readDouble(), z = buf.readDouble();
-            float dx = buf.readFloat(), dy = buf.readFloat(), dz = buf.readFloat();
-            long seed = buf.readLong();
-            return new PlayGadgetFxS2C(id, x, y, z, dx, dy, dz, seed);
-        }
 
         public static void handle(PlayGadgetFxS2C msg, Supplier<NetworkEvent.Context> ctx) {
             NetworkEvent.Context c = ctx.get();
@@ -171,6 +190,7 @@ public final class GadgetNet {
     // ------------------------------------------------------------------------
     public interface IGadgetAction {
         default void serverPerform(ServerPlayer sp, Vec3 origin, Vec3 dir, long seed) {}
+        /** Cooldown is enforced server-side to a global 45s; per-action value is ignored for policy. */
         int cooldownTicks(ServerPlayer sp, @Nullable CosmeticDef def);
         @OnlyIn(Dist.CLIENT)
         void clientFx(ClientLevel level, Vec3 origin, Vec3 dir, long seed, CosmeticDef def);
@@ -180,11 +200,7 @@ public final class GadgetNet {
     private static final class GenericGadgetAction implements IGadgetAction {
         @Override
         public int cooldownTicks(ServerPlayer sp, @Nullable CosmeticDef def) {
-            // Prefer explicit ms (cooldown_ms), then ticks/seconds heuristics; default ~45s.
-            int fallbackTicks = 45 * 20;
-            long ms = Props.ms(def, "cooldown_ms",
-                    Props.msGuess(def, "cooldown", "cooldown_ticks", "cooldown_seconds", "cooldown_s"));
-            return (ms > 0) ? (int)Math.max(1, ms / 50L) : fallbackTicks;
+            return GLOBAL_COOLDOWN_TICKS;
         }
 
         @Override
@@ -196,74 +212,115 @@ public final class GadgetNet {
                 return;
             }
 
-            long durationMs = Props.ms(def, "duration_ms", 1200L);
-            if (durationMs < 300L) durationMs = 300L;
-            if (durationMs > 6000L) durationMs = 6000L;
-
-            // Notify UI to hold while this effect runs.
-            ClientMenuHold.notifyStart(def.id().toString());
-            ClientScheduler.scheduleMs(durationMs + 50L, () ->
-                    ClientMenuHold.notifyEnd(def.id().toString()));
-
-            // Optional sound
+            // ----- Optional sound -----
             ResourceLocation snd = Props.rl(def, "sound", null);
             float vol = Props.f(def, "volume", 1.0f);
             float pit = Props.f(def, "pitch", 1.0f);
             if (snd != null) FastFx.playSound(level, origin, snd, vol, pit);
 
-            // Pattern dispatch (initial set—expand as we migrate)
+            // ----- Pattern dispatch -----
             java.util.Random r = new java.util.Random(seed);
             switch (pattern) {
-                case "confetti_burst" -> {
-                    int count = Props.i(def, "count", 60);
-                    float coneDeg = Props.f(def, "cone_deg", 40f);
-                    float coneRad = (float)Math.toRadians(coneDeg);
-                    for (int i = 0; i < count; i++) {
-                        Vec3 v = FastFx.randomCone(dir, coneRad, r).scale(0.35 + r.nextDouble() * 0.25);
-                        level.addParticle(ParticleTypes.FIREWORK, origin.x, origin.y, origin.z, v.x, v.y * 0.6, v.z);
-                        if (r.nextFloat() < 0.15f) {
-                            level.addParticle(ParticleTypes.HAPPY_VILLAGER, origin.x, origin.y, origin.z, v.x * 0.2, v.y * 0.2, v.z * 0.2);
-                        }
-                    }
-                }
+                case "confetti_burst" -> ConfettiBurstFx.play(level, origin, dir, def, r);
                 case "spark_fan" -> {
-                    int count = Props.i(def, "count", 40);
-                    float arcDeg = Props.f(def, "arc_deg", 60f);
+                    int count  = Props.i(def, "count", 50);
+                    float arcDeg = Props.f(def, "arc_deg", 70f);
                     double arcRad = Math.toRadians(arcDeg);
+
                     Vec3 f = dir.normalize();
-                    Vec3 right = f.cross(new Vec3(0,1,0));
-                    if (right.lengthSqr() < 1e-4) right = f.cross(new Vec3(1,0,0));
+                    Vec3 right = f.cross(new Vec3(0, 1, 0));
+                    if (right.lengthSqr() < 1e-4) right = f.cross(new Vec3(1, 0, 0));
                     right = right.normalize();
+                    Vec3 up = right.cross(f).normalize();
+
                     for (int i = 0; i < count; i++) {
                         double a = (r.nextDouble() - 0.5) * arcRad;
                         double ca = Math.cos(a), sa = Math.sin(a);
-                        Vec3 sweep = f.scale(ca).add(right.scale(sa)).normalize().scale(0.4 + r.nextDouble() * 0.2);
-                        level.addParticle(ParticleTypes.ELECTRIC_SPARK, origin.x, origin.y + 0.2, origin.z, sweep.x, sweep.y * 0.3, sweep.z);
-                        if (r.nextFloat() < 0.5f) {
-                            level.addParticle(ParticleTypes.CRIT, origin.x, origin.y + 0.2, origin.z, sweep.x * 0.6, sweep.y * 0.2, sweep.z * 0.6);
+                        double speed = 0.35 + r.nextDouble() * 0.25;
+                        Vec3 sweep = f.scale(ca).add(right.scale(sa)).normalize().scale(speed);
+                        
+                        // Add slight upward component for more dynamic feel
+                        sweep = sweep.add(up.scale(0.1 + r.nextDouble() * 0.15));
+
+                        level.addParticle(ParticleTypes.ELECTRIC_SPARK, origin.x, origin.y + 0.2, origin.z,
+                                sweep.x, sweep.y * 0.4, sweep.z);
+                        if (r.nextFloat() < 0.6f) {
+                            level.addParticle(ParticleTypes.CRIT, origin.x, origin.y + 0.2, origin.z,
+                                    sweep.x * 0.7, sweep.y * 0.3, sweep.z * 0.7);
+                        }
+                        if (r.nextFloat() < 0.2f) {
+                            level.addParticle(ParticleTypes.ENCHANT, origin.x, origin.y + 0.2, origin.z,
+                                    sweep.x * 0.4, sweep.y * 0.2, sweep.z * 0.4);
                         }
                     }
                 }
-                case "ring" -> {
-                    float radius = Props.f(def, "radius_max", 6f);
-                    int rings = Props.i(def, "rings", 2);
-                    FastFx.expandingRing(level, origin, dir, seed, radius, rings);
+                // Stacked spinning spark rings (runs for ~duration_ms)
+                case "spark_ring_stack" -> {
+                    long  showMs    = Props.ms(def, "duration_ms", 4000L);
+                    int   rateMs    = (int) Props.ms(def, "ring_rate_ms", 200L);
+                    float height    = Props.f(def, "stack_height", 1.6f);       // feet → head
+                    int   rings     = Math.max(1, Props.i(def, "stack_rings", 4));
+                    float radius    = Props.f(def, "ring_radius", 1.2f);
+                    int   perRing   = Math.max(8, Props.i(def, "ring_particles", 40));
+                    double spinSpeed = Props.f(def, "spin_speed", 0.015f);      // radians/ms
+
+                    showMs = Math.max(200L, Math.min(8000L, showMs)); // hard clamp
+                    rateMs = Math.max(40, Math.min(500, rateMs));     // hard clamp
+
+                    for (int t = 0; t < showMs; t += rateMs) {
+                        final int ti = t;
+                        ClientScheduler.scheduleMs(ti, () -> {
+                            double baseRot = ti * spinSpeed;
+                            for (int i = 0; i < rings; i++) {
+                                float y = (rings == 1) ? 0f : (i / (float) (rings - 1)) * height;
+                                double rot = baseRot + i * 0.5; // stagger each ring
+
+                                for (int k = 0; k < perRing; k++) {
+                                    double a  = rot + (2.0 * Math.PI * k / perRing);
+                                    double cx = Math.cos(a) * radius;
+                                    double cz = Math.sin(a) * radius;
+                                    double px = origin.x + cx;
+                                    double py = origin.y + y;
+                                    double pz = origin.z + cz;
+
+                                    // Main spark particles with slight outward motion
+                                    double vx = cx * 0.01;
+                                    double vz = cz * 0.01;
+                                    level.addParticle(ParticleTypes.ELECTRIC_SPARK, px, py, pz, vx, 0.02, vz);
+                                    if (r.nextFloat() < 0.25f) {
+                                        level.addParticle(ParticleTypes.CRIT, px, py, pz, vx * 0.5, 0.015, vz * 0.5);
+                                    }
+                                    if (r.nextFloat() < 0.1f) {
+                                        level.addParticle(ParticleTypes.ENCHANT, px, py, pz, 0, 0.01, 0);
+                                    }
+                                }
+                            }
+                        });
+                    }
                 }
-                case "helix" -> {
-                    float length = Props.f(def, "length", 12f);
-                    int coils = Props.i(def, "coils", 3);
-                    FastFx.helixStream(level, origin, dir, seed, length, coils);
-                }
-                case "orbit" -> {
-                    float radius = Props.f(def, "radius_max", 2.5f);
-                    FastFx.fireflyOrbit(level, origin, dir, seed, radius);
-                }
-                case "beacon" -> {
-                    float height = Props.f(def, "height", 25f);
-                    FastFx.skyBeacon(level, origin, seed, height);
-                }
+                case "ring" -> FastFx.expandingRing(level, origin, dir, seed,
+                        Props.f(def, "radius_max", 6f),
+                        Props.i(def, "rings", 2));
+                case "helix" -> FastFx.helixStream(level, origin, dir, seed,
+                        Props.f(def, "length", 12f),
+                        Props.i(def, "coils", 3));
+                case "orbit" -> FastFx.fireflyOrbit(level, origin, dir, seed,
+                        Props.f(def, "radius_max", 2.5f));
+                case "beacon" -> FastFx.skyBeacon(level, origin, seed,
+                        Props.f(def, "height", 25f));
+                case "fire_tornado" -> FastFx.fireTornado(level, origin, seed,
+                        Props.f(def, "height", 8f),
+                        Props.f(def, "radius", 2.5f),
+                        Props.i(def, "duration_ticks", 100));
+                case "sparkle_burst" -> FastFx.sparkleBurst(level, origin, dir, seed,
+                        Props.i(def, "count", 80),
+                        Props.f(def, "radius", 4f));
+                case "bubble_burst" -> FastFx.bubbleBurst(level, origin, seed,
+                        Props.i(def, "count", 60),
+                        Props.f(def, "speed", 0.12f),
+                        Props.f(def, "cone_deg", 120f));
                 default -> {
-                    // Unknown pattern: do a tiny neutral pop so it never feels broken.
+                    // Tiny neutral pop so it never feels broken.
                     level.addParticle(ParticleTypes.END_ROD, origin.x, origin.y, origin.z, 0, 0.05, 0);
                 }
             }
@@ -284,15 +341,15 @@ public final class GadgetNet {
         }
 
         public static void bootstrapDefaults() {
+            REGISTRY.clear();
+
             // ----------------------------------------------------------------
-            // PHASE 1: Hardwired baseline (kept for continuity)
+            // PHASE 1: Hardwired baseline (kept for continuity) — all 45s CD
             // ----------------------------------------------------------------
 
             // 1) confetti_popper
             register(rl("cosmeticslite","confetti_popper"), new IGadgetAction() {
-                @Override public int cooldownTicks(ServerPlayer sp, @Nullable CosmeticDef def) {
-                    return Props.i(def, "cooldown", 600);
-                }
+                @Override public int cooldownTicks(ServerPlayer sp, @Nullable CosmeticDef def) { return GLOBAL_COOLDOWN_TICKS; }
                 @Override @OnlyIn(Dist.CLIENT)
                 public void clientFx(ClientLevel level, Vec3 origin, Vec3 dir, long seed, CosmeticDef def) {
                     final int count = Props.i(def, "count", 60);
@@ -315,9 +372,7 @@ public final class GadgetNet {
 
             // 2) bubble_blower
             register(rl("cosmeticslite","bubble_blower"), new IGadgetAction() {
-                @Override public int cooldownTicks(ServerPlayer sp, @Nullable CosmeticDef def) {
-                    return Props.i(def, "cooldown", 400);
-                }
+                @Override public int cooldownTicks(ServerPlayer sp, @Nullable CosmeticDef def) { return GLOBAL_COOLDOWN_TICKS; }
                 @Override @OnlyIn(Dist.CLIENT)
                 public void clientFx(ClientLevel level, Vec3 origin, Vec3 dir, long seed, CosmeticDef def) {
                     final double speed = Props.f(def, "speed", 0.15f);
@@ -336,75 +391,85 @@ public final class GadgetNet {
                 }
             });
 
-            // 3) gear_spark_emitter
+            // 3) gear_spark_emitter — stacked rings
             register(rl("cosmeticslite","gear_spark_emitter"), new IGadgetAction() {
-                @Override public int cooldownTicks(ServerPlayer sp, @Nullable CosmeticDef def) {
-                    return Props.i(def, "cooldown", 500);
-                }
+                @Override public int cooldownTicks(ServerPlayer sp, @Nullable CosmeticDef def) { return GLOBAL_COOLDOWN_TICKS; }
                 @Override @OnlyIn(Dist.CLIENT)
                 public void clientFx(ClientLevel level, Vec3 origin, Vec3 dir, long seed, CosmeticDef def) {
-                    final int count = Props.i(def, "count", 40);
-                    final float arcDeg = Props.f(def, "arc_deg", 60f);
+                    final long  showMs     = Math.max(200L, Math.min(8000L, Props.ms(def, "duration_ms", 4000L)));
+                    final int   rateMs     = (int) Math.max(40, Math.min(500, Props.ms(def, "ring_rate_ms", 200L)));
+                    final float height     = Props.f(def, "stack_height", 1.6f);
+                    final int   rings      = Math.max(1, Props.i(def, "stack_rings", 4));
+                    final float radius     = Props.f(def, "ring_radius", 1.8f);
+                    final int   perRing    = Math.max(8, Props.i(def, "ring_particles", 42));
+                    final double spinSpeed = Props.f(def, "spin_speed", 0.015f);
                     final var snd = Props.rl(def, "sound", rl("minecraft","block.anvil.place"));
-                    final float vol = Props.f(def, "volume", 0.9f), pit = Props.f(def, "pitch", 0.9f);
+                    final float vol = Props.f(def, "volume", 0.9f);
+                    final float pit = Props.f(def, "pitch", 0.9f);
 
                     java.util.Random r = new java.util.Random(seed);
-                    double arcRad = Math.toRadians(arcDeg);
-                    for (int i = 0; i < count; i++) {
-                        double a = (r.nextDouble() - 0.5) * arcRad;
-                        double ca = Math.cos(a), sa = Math.sin(a);
-                        Vec3 f = dir.normalize();
-                        Vec3 right = f.cross(new Vec3(0,1,0));
-                        if (right.lengthSqr() < 1e-4) right = f.cross(new Vec3(1,0,0));
-                        right = right.normalize();
-                        Vec3 sweep = f.scale(ca).add(right.scale(sa)).normalize().scale(0.4 + r.nextDouble() * 0.2);
+                    for (int t = 0; t < showMs; t += rateMs) {
+                        final int ti = t;
+                        ClientScheduler.scheduleMs(ti, () -> {
+                            double baseRot = ti * spinSpeed;
+                            for (int i = 0; i < rings; i++) {
+                                float y = (rings == 1) ? 0f : (i / (float) (rings - 1)) * height;
+                                double rot = baseRot + i * 0.5;
+                                for (int k = 0; k < perRing; k++) {
+                                    double a  = rot + (2.0 * Math.PI * k / perRing);
+                                    double px = origin.x + Math.cos(a) * radius;
+                                    double py = origin.y + y;
+                                    double pz = origin.z + Math.sin(a) * radius;
 
-                        level.addParticle(ParticleTypes.ELECTRIC_SPARK, origin.x, origin.y + 0.2, origin.z, sweep.x, sweep.y * 0.3, sweep.z);
-                        if (r.nextFloat() < 0.5f) {
-                            level.addParticle(ParticleTypes.CRIT, origin.x, origin.y + 0.2, origin.z, sweep.x * 0.6, sweep.y * 0.2, sweep.z * 0.6);
-                        }
+                                    level.addParticle(ParticleTypes.ELECTRIC_SPARK, px, py, pz, 0, 0.02, 0);
+                                    if (r.nextFloat() < 0.18f) {
+                                        level.addParticle(ParticleTypes.CRIT, px, py, pz, 0, 0.01, 0);
+                                    }
+                                }
+                            }
+                        });
                     }
                     FastFx.playSound(level, origin, snd, vol, pit);
                 }
             });
 
-            // ---- Cinematic presets (no GadgetTiming; use FastFx helpers you already have)
-            register(rl("cosmeticslite","supernova_burst"), new BasicFx(45*20) {
+            // ---- Cinematic presets (kept; all 45s CD) ----
+            register(rl("cosmeticslite","supernova_burst"), new BasicFx(GLOBAL_COOLDOWN_TICKS) {
                 @Override @OnlyIn(Dist.CLIENT) public void fx(ClientLevel level, Vec3 origin, Vec3 dir, long seed, CosmeticDef def) {
                     FastFx.starburstRays(level, origin, dir, seed, Props.i(def,"rays",16), Props.f(def,"length",16f));
                     FastFx.playSound(level, origin, Props.rl(def,"sound",rl("minecraft","entity.firework_rocket.blast")),
                             Props.f(def,"volume",1.0f), Props.f(def,"pitch",0.9f));
                 }
             });
-            register(rl("cosmeticslite","expanding_ring"), new BasicFx(45*20) {
+            register(rl("cosmeticslite","expanding_ring"), new BasicFx(GLOBAL_COOLDOWN_TICKS) {
                 @Override @OnlyIn(Dist.CLIENT) public void fx(ClientLevel level, Vec3 origin, Vec3 dir, long seed, CosmeticDef def) {
                     FastFx.expandingRing(level, origin, dir, seed, Props.f(def,"radius_max",8f), Props.i(def,"rings",2));
                     FastFx.playSound(level, origin, Props.rl(def,"sound",rl("minecraft","block.amethyst_block.chime")),
                             Props.f(def,"volume",0.7f), Props.f(def,"pitch",1.1f));
                 }
             });
-            register(rl("cosmeticslite","helix_stream"), new BasicFx(45*20) {
+            register(rl("cosmeticslite","helix_stream"), new BasicFx(GLOBAL_COOLDOWN_TICKS) {
                 @Override @OnlyIn(Dist.CLIENT) public void fx(ClientLevel level, Vec3 origin, Vec3 dir, long seed, CosmeticDef def) {
                     FastFx.helixStream(level, origin, dir, seed, Props.f(def,"length",12f), Props.i(def,"coils",3));
                     FastFx.playSound(level, origin, Props.rl(def,"sound",rl("minecraft","block.beacon.power_select")),
                             Props.f(def,"volume",0.8f), Props.f(def,"pitch",1.2f));
                 }
             });
-            register(rl("cosmeticslite","firefly_orbit"), new BasicFx(45*20) {
+            register(rl("cosmeticslite","firefly_orbit"), new BasicFx(GLOBAL_COOLDOWN_TICKS) {
                 @Override @OnlyIn(Dist.CLIENT) public void fx(ClientLevel level, Vec3 origin, Vec3 dir, long seed, CosmeticDef def) {
                     FastFx.fireflyOrbit(level, origin, dir, seed, Props.f(def,"radius_max",2.5f));
                     FastFx.playSound(level, origin, Props.rl(def,"sound",rl("minecraft","block.amethyst_block.hit")),
                             Props.f(def,"volume",0.6f), Props.f(def,"pitch",1.2f));
                 }
             });
-            register(rl("cosmeticslite","ground_ripple"), new BasicFx(45*20) {
+            register(rl("cosmeticslite","ground_ripple"), new BasicFx(GLOBAL_COOLDOWN_TICKS) {
                 @Override @OnlyIn(Dist.CLIENT) public void fx(ClientLevel level, Vec3 origin, Vec3 dir, long seed, CosmeticDef def) {
                     FastFx.groundRipple(level, origin, seed, Props.f(def,"radius_max",6f));
                     FastFx.playSound(level, origin, Props.rl(def,"sound",rl("minecraft","block.basalt.break")),
                             Props.f(def,"volume",0.9f), Props.f(def,"pitch",0.9f));
                 }
             });
-            register(rl("cosmeticslite","sky_beacon"), new BasicFx(60*20) {
+            register(rl("cosmeticslite","sky_beacon"), new BasicFx(GLOBAL_COOLDOWN_TICKS) {
                 @Override @OnlyIn(Dist.CLIENT) public void fx(ClientLevel level, Vec3 origin, Vec3 dir, long seed, CosmeticDef def) {
                     FastFx.skyBeacon(level, origin, seed, Props.f(def,"height",25f));
                     FastFx.playSound(level, origin, Props.rl(def,"sound",rl("minecraft","block.beacon.activate")),
@@ -427,8 +492,7 @@ public final class GadgetNet {
             aliasTo(rl("cosmeticslite","bubble_blast"),      rl("cosmeticslite","bubble_blower"));
 
             // ----------------------------------------------------------------
-            // PHASE 2: Apply JSON overrides
-            // If a gadget has properties.pattern, bind that id to GENERIC.
+            // PHASE 2: Apply JSON overrides → bind to GENERIC if 'pattern' exists
             // ----------------------------------------------------------------
             try {
                 for (CosmeticDef d : CosmeticsRegistry.getByType("gadgets")) {
@@ -441,14 +505,11 @@ public final class GadgetNet {
             } catch (Throwable ignored) {}
         }
 
-        /** Tiny base for one-shot FX with simple cooldown field. */
+        /** Tiny base for one-shot FX; cooldown value unused (global policy). */
         private static abstract class BasicFx implements IGadgetAction {
             private final int cooldownTicks;
             BasicFx(int cooldownTicks) { this.cooldownTicks = Math.max(1, cooldownTicks); }
-            @Override public int cooldownTicks(ServerPlayer sp, @Nullable CosmeticDef def) {
-                int cd = Props.i(def, "cooldown", cooldownTicks);
-                return Math.max(1, cd);
-            }
+            @Override public int cooldownTicks(ServerPlayer sp, @Nullable CosmeticDef def) { return GLOBAL_COOLDOWN_TICKS; }
             @Override @OnlyIn(Dist.CLIENT) public void clientFx(ClientLevel level, Vec3 origin, Vec3 dir, long seed, CosmeticDef def) {
                 fx(level, origin, dir, seed, def);
             }
@@ -470,7 +531,34 @@ public final class GadgetNet {
             Vec3 origin = new Vec3(msg.x(), msg.y(), msg.z());
             Vec3 dir = new Vec3(msg.dx(), msg.dy(), msg.dz()).normalize();
             IGadgetAction action = GadgetActions.get(msg.gadgetId());
-            if (action != null) action.clientFx(level, origin, dir, msg.seed(), def);
+            if (action == null) return;
+
+            // --- Unified menu hold + unified client debounce for ALL gadgets ---
+            long durationMs = Props.ms(def, "duration_ms", 1200L);
+            long padMs      = Props.ms(def, "menu_pad_ms", 300L);
+            if (durationMs < 300L) durationMs = 300L;
+            if (durationMs > 6000L) durationMs = 6000L;
+            if (padMs < 0L) padMs = 0L;
+            if (padMs > 1500L) padMs = 1500L;
+
+            long holdTotal = durationMs + padMs;
+
+            // Debounce (covers hardwired + generic); suppress if inside 45s or current hold window
+            if (!ClientCooldownGate.begin(def.id(), holdTotal, GLOBAL_COOLDOWN_TICKS)) {
+                return;
+            }
+
+            // Sync cooldown with GadgetClientCommands for UI display
+            // This ensures remainingMs() works correctly
+            com.pastlands.cosmeticslite.gadget.GadgetClientCommands.noteJustUsed(def.id());
+
+            // Hold the menu hidden for the full FX window
+            String idStr = def.id().toString();
+            ClientMenuHold.notifyStart(idStr);
+            ClientScheduler.scheduleMs(holdTotal, () -> ClientMenuHold.notifyEnd(idStr));
+
+            // Run the actual gadget FX
+            action.clientFx(level, origin, dir, msg.seed(), def);
         }
     }
 
@@ -490,13 +578,296 @@ public final class GadgetNet {
 
         static void starburstRays(ClientLevel level, Vec3 origin, Vec3 dir, long seed, int rays, float length) {
             java.util.Random r = new java.util.Random(seed);
+            // Create vibrant firework-like starburst
             for (int i = 0; i < rays; i++) {
                 Vec3 v = randomCone(dir, (float)Math.toRadians(180f), r).normalize().scale(length * (0.8 + r.nextDouble()*0.2));
-                for (int j = 0; j < 6; j++) {
-                    Vec3 p = origin.add(v.scale(j/6.0));
-                    level.addParticle(ParticleTypes.END_ROD, p.x, p.y, p.z, 0,0,0);
-                    if (j==5) level.addParticle(ParticleTypes.HAPPY_VILLAGER,p.x,p.y,p.z,0,0.02,0);
+                // Create colorful ray trail
+                for (int j = 0; j < 8; j++) {
+                    Vec3 p = origin.add(v.scale(j/8.0));
+                    float fade = 1.0f - (j / 8.0f) * 0.8f;
+                    // Main ray particles
+                    level.addParticle(ParticleTypes.END_ROD, p.x, p.y, p.z, 0, 0, 0);
+                    // Add sparkle trail
+                    if (j % 2 == 0 && r.nextFloat() < 0.6f) {
+                        level.addParticle(ParticleTypes.FIREWORK, p.x, p.y, p.z, 
+                                v.x * 0.05, v.y * 0.05, v.z * 0.05);
+                    }
+                    // Add happy villager sparkles at the end
+                    if (j == 7) {
+                        level.addParticle(ParticleTypes.HAPPY_VILLAGER, p.x, p.y, p.z, 0, 0.03, 0);
+                        // Burst effect at the end
+                        for (int k = 0; k < 3; k++) {
+                            Vec3 burst = randomCone(v, (float)Math.toRadians(30f), r).scale(0.3);
+                            level.addParticle(ParticleTypes.FIREWORK, p.x, p.y, p.z, 
+                                    burst.x, burst.y, burst.z);
+                        }
+                    }
                 }
+            }
+            // Add central burst
+            for (int i = 0; i < 12; i++) {
+                Vec3 burst = randomCone(dir, (float)Math.toRadians(360f), r).scale(0.5);
+                level.addParticle(ParticleTypes.FIREWORK, origin.x, origin.y, origin.z, 
+                        burst.x, burst.y, burst.z);
+            }
+        }
+        
+        /** Fire tornado that surrounds the player - spinning flames going upward */
+        static void fireTornado(ClientLevel level, Vec3 origin, long seed, float height, float radius, int durationTicks) {
+            java.util.Random r = new java.util.Random(seed);
+            int layers = (int)(height * 2);
+            int particlesPerLayer = 24;
+            
+            for (int tick = 0; tick < durationTicks; tick += 2) {
+                final int currentTick = tick;
+                ClientScheduler.schedule(tick / 2, () -> {
+                    double rotation = currentTick * 0.1; // Spinning speed
+                    for (int layer = 0; layer < layers; layer++) {
+                        float y = (layer / (float)layers) * height;
+                        float layerRadius = radius * (0.7f + layer / (float)layers * 0.3f); // Wider at top
+                        
+                        for (int i = 0; i < particlesPerLayer; i++) {
+                            double angle = (i / (double)particlesPerLayer) * 2 * Math.PI + rotation;
+                            double x = Math.cos(angle) * layerRadius;
+                            double z = Math.sin(angle) * layerRadius;
+                            
+                            // Upward spiral motion
+                            double vy = 0.15 + (layer / (float)layers) * 0.1;
+                            double vx = -Math.sin(angle) * 0.05;
+                            double vz = Math.cos(angle) * 0.05;
+                            
+                            // Main flame particles
+                            level.addParticle(ParticleTypes.FLAME, 
+                                    origin.x + x, origin.y + y, origin.z + z, 
+                                    vx, vy, vz);
+                            
+                            // Add smoke and embers
+                            if (r.nextFloat() < 0.3f) {
+                                level.addParticle(ParticleTypes.SMOKE, 
+                                        origin.x + x, origin.y + y, origin.z + z, 
+                                        vx * 0.5, vy * 0.3, vz * 0.5);
+                            }
+                            if (r.nextFloat() < 0.2f) {
+                                level.addParticle(ParticleTypes.LAVA, 
+                                        origin.x + x, origin.y + y, origin.z + z, 
+                                        vx * 0.3, vy * 0.5, vz * 0.3);
+                            }
+                        }
+                    }
+                });
+            }
+        }
+        
+        /** Sparkle burst - firework-like explosion with colorful sparkles */
+        static void sparkleBurst(ClientLevel level, Vec3 origin, Vec3 dir, long seed, int count, float radius) {
+            java.util.Random r = new java.util.Random(seed);
+            // Initial burst
+            for (int i = 0; i < count; i++) {
+                Vec3 v = randomCone(dir, (float)Math.toRadians(180f), r).normalize()
+                        .scale(radius * (0.5 + r.nextDouble() * 0.5));
+                
+                // Colorful sparkle particles
+                level.addParticle(ParticleTypes.FIREWORK, origin.x, origin.y, origin.z, 
+                        v.x, v.y, v.z);
+                
+                // Add end rod sparkles
+                if (r.nextFloat() < 0.4f) {
+                    level.addParticle(ParticleTypes.END_ROD, origin.x, origin.y, origin.z, 
+                            v.x * 0.6, v.y * 0.6, v.z * 0.6);
+                }
+                
+                // Add happy villager sparkles
+                if (r.nextFloat() < 0.3f) {
+                    level.addParticle(ParticleTypes.HAPPY_VILLAGER, origin.x, origin.y, origin.z, 
+                            v.x * 0.4, v.y * 0.4, v.z * 0.4);
+                }
+            }
+            
+            // Secondary burst after delay
+            ClientScheduler.scheduleMs(200, () -> {
+                for (int i = 0; i < count / 2; i++) {
+                    Vec3 v = randomCone(dir, (float)Math.toRadians(180f), r).normalize()
+                            .scale(radius * 0.3 * (0.5 + r.nextDouble()));
+                    level.addParticle(ParticleTypes.FIREWORK, origin.x, origin.y, origin.z, 
+                            v.x, v.y, v.z);
+                }
+            });
+        }
+        
+        /** Bubble burst - various sized bubbles exploding outward and drifting away */
+        static void bubbleBurst(ClientLevel level, Vec3 origin, long seed, int count, float baseSpeed, float coneDeg) {
+            // Spawn bubbles continuously every tick (50ms) for smooth, blended effect
+            // This eliminates the jarring pulse and creates a seamless fade
+            long durationMs = 4000L;
+            int totalTicks = (int)(durationMs / 50L); // ~80 ticks over 4 seconds
+            int totalBubbles = Math.max(count, 280);
+            
+            // Define bubble colors (light blue, cyan, white, pale blue variations)
+            Vector3f[] bubbleColors = new Vector3f[] {
+                new Vector3f(0.53f, 0.81f, 0.92f), // Light blue (#87CEEB)
+                new Vector3f(0.0f, 1.0f, 1.0f),    // Cyan (#00FFFF)
+                new Vector3f(1.0f, 1.0f, 1.0f),    // White (#FFFFFF)
+                new Vector3f(0.69f, 0.88f, 0.90f), // Pale blue (#B0E0E6)
+                new Vector3f(0.5f, 0.9f, 0.9f),    // Light cyan
+                new Vector3f(0.7f, 0.9f, 1.0f),    // Sky blue
+                new Vector3f(0.6f, 0.85f, 0.95f)   // Powder blue
+            };
+            
+            // Schedule bubble popping sounds throughout the effect
+            java.util.Random soundRng = new java.util.Random(seed);
+            // Use a sound that definitely exists - try multiple bubble-related sounds
+            ResourceLocation[] popSounds = new ResourceLocation[] {
+                rl("minecraft", "block.bubble_column.upwards_inside"),
+                rl("minecraft", "block.bubble_column.whirlpool_inside"),
+                rl("minecraft", "entity.guardian.attack")
+            };
+            int soundCount = 20; // More sounds for better effect
+            for (int s = 0; s < soundCount; s++) {
+                long soundDelay = (long)(durationMs * (soundRng.nextDouble() * 0.85 + 0.05)); // Random timing
+                float pitch = 0.6f + soundRng.nextFloat() * 0.8f; // Pitch between 0.6 and 1.4
+                float volume = 0.4f + soundRng.nextFloat() * 0.5f; // Volume between 0.4 and 0.9
+                final float finalPitch = pitch;
+                final float finalVolume = volume;
+                final long soundSeed = seed + s;
+                final ResourceLocation chosenSound = popSounds[soundRng.nextInt(popSounds.length)];
+                ClientScheduler.scheduleMs(soundDelay, () -> {
+                    java.util.Random posRng = new java.util.Random(soundSeed);
+                    Vec3 soundPos = origin.add(
+                        (posRng.nextDouble() - 0.5) * 2.5,
+                        (posRng.nextDouble() - 0.5) * 2.0,
+                        (posRng.nextDouble() - 0.5) * 2.5
+                    );
+                    FastFx.playSound(level, soundPos, chosenSound, finalVolume, finalPitch);
+                });
+            }
+            
+            // Calculate bubbles per tick with smooth fade-out curve
+            // Use exponential decay for natural fade: start dense, fade smoothly
+            for (int tick = 0; tick < totalTicks; tick++) {
+                final int currentTick = tick;
+                ClientScheduler.schedule(tick, () -> {
+                    // Smooth fade curve: exponential decay from 1.0 to ~0.1
+                    float timeProgress = currentTick / (float)totalTicks;
+                    float fadeFactor = (float)(1.0 - Math.pow(timeProgress, 1.5)); // Smooth exponential fade
+                    
+                    // Bubbles per tick: starts high, fades smoothly
+                    int bubblesThisTick = (int)((totalBubbles / (float)totalTicks) * (1.0f + fadeFactor * 2.0f));
+                    bubblesThisTick = Math.max(1, bubblesThisTick); // At least 1 bubble per tick
+                    
+                    java.util.Random tickRng = new java.util.Random(seed + currentTick);
+                    
+                    for (int i = 0; i < bubblesThisTick; i++) {
+                        // True spherical distribution - bubbles go in ALL directions
+                        double theta = tickRng.nextDouble() * 2 * Math.PI;
+                        double phi = tickRng.nextDouble() * Math.PI;
+                        double sinPhi = Math.sin(phi);
+                        Vec3 dir = new Vec3(
+                            Math.cos(theta) * sinPhi,
+                            Math.cos(phi), // -1 to 1 (down to up)
+                            Math.sin(theta) * sinPhi
+                        );
+                        
+                        // Vary speeds - faster early, slower later (creates size illusion via motion)
+                        float speedVariation = 0.3f + tickRng.nextFloat() * 1.4f; // 0.3x to 1.7x
+                        float timeSpeedFactor = 1.0f - timeProgress * 0.6f; // Slower over time
+                        float speed = baseSpeed * speedVariation * timeSpeedFactor;
+                        
+                        // Spawn position: early bubbles at origin, later ones drift outward
+                        float driftDistance = timeProgress * 1.2f; // Bubbles have drifted outward
+                        Vec3 spawnPos = origin.add(dir.scale(driftDistance)).add(
+                            (tickRng.nextDouble() - 0.5) * 0.4,
+                            (tickRng.nextDouble() - 0.5) * 0.3,
+                            (tickRng.nextDouble() - 0.5) * 0.4
+                        );
+                        
+                        Vec3 velocity = dir.scale(speed);
+                        
+                        // Spawn bubble - vary spawn density to simulate size variation
+                        // Mix regular BUBBLE particles with colored DUST particles for variety
+                        float sizeRoll = tickRng.nextFloat();
+                        boolean useColored = tickRng.nextFloat() < 0.7f; // 70% colored, 30% regular for more visible colors
+                        // Choose bubble color randomly (only used if useColored is true)
+                        Vector3f bubbleColor = bubbleColors[tickRng.nextInt(bubbleColors.length)];
+                        
+                        if (sizeRoll < 0.15f) {
+                            // Large bubbles: spawn 2-3 close together
+                            int clusterSize = 2 + tickRng.nextInt(2);
+                            for (int c = 0; c < clusterSize; c++) {
+                                Vec3 clusterOffset = new Vec3(
+                                    (tickRng.nextDouble() - 0.5) * 0.15,
+                                    (tickRng.nextDouble() - 0.5) * 0.15,
+                                    (tickRng.nextDouble() - 0.5) * 0.15
+                                );
+                                if (useColored) {
+                                    // Use larger dust particles for better visibility
+                                    level.addParticle(new DustParticleOptions(bubbleColor, 1.2f),
+                                            spawnPos.x + clusterOffset.x, 
+                                            spawnPos.y + clusterOffset.y, 
+                                            spawnPos.z + clusterOffset.z, 
+                                            velocity.x * 0.9, velocity.y * 0.9, velocity.z * 0.9);
+                                    // Also add a regular bubble for bubble-like appearance
+                                    level.addParticle(ParticleTypes.BUBBLE, 
+                                            spawnPos.x + clusterOffset.x * 0.5, 
+                                            spawnPos.y + clusterOffset.y * 0.5, 
+                                            spawnPos.z + clusterOffset.z * 0.5, 
+                                            velocity.x * 0.8, velocity.y * 0.8, velocity.z * 0.8);
+                                } else {
+                                    level.addParticle(ParticleTypes.BUBBLE, 
+                                            spawnPos.x + clusterOffset.x, 
+                                            spawnPos.y + clusterOffset.y, 
+                                            spawnPos.z + clusterOffset.z, 
+                                            velocity.x * 0.9, velocity.y * 0.9, velocity.z * 0.9);
+                                }
+                            }
+                        } else if (sizeRoll < 0.4f) {
+                            // Medium bubbles: spawn 1-2
+                            int clusterSize = 1 + tickRng.nextInt(2);
+                            for (int c = 0; c < clusterSize; c++) {
+                                Vec3 clusterOffset = new Vec3(
+                                    (tickRng.nextDouble() - 0.5) * 0.1,
+                                    (tickRng.nextDouble() - 0.5) * 0.1,
+                                    (tickRng.nextDouble() - 0.5) * 0.1
+                                );
+                                if (useColored) {
+                                    // Use larger dust particles for better visibility
+                                    level.addParticle(new DustParticleOptions(bubbleColor, 1.0f),
+                                            spawnPos.x + clusterOffset.x, 
+                                            spawnPos.y + clusterOffset.y, 
+                                            spawnPos.z + clusterOffset.z, 
+                                            velocity.x, velocity.y, velocity.z);
+                                    // Also add a regular bubble for bubble-like appearance
+                                    level.addParticle(ParticleTypes.BUBBLE, 
+                                            spawnPos.x + clusterOffset.x * 0.5, 
+                                            spawnPos.y + clusterOffset.y * 0.5, 
+                                            spawnPos.z + clusterOffset.z * 0.5, 
+                                            velocity.x * 0.9, velocity.y * 0.9, velocity.z * 0.9);
+                                } else {
+                                    level.addParticle(ParticleTypes.BUBBLE, 
+                                            spawnPos.x + clusterOffset.x, 
+                                            spawnPos.y + clusterOffset.y, 
+                                            spawnPos.z + clusterOffset.z, 
+                                            velocity.x, velocity.y, velocity.z);
+                                }
+                            }
+                        } else {
+                            // Small bubbles: single spawn
+                            if (useColored) {
+                                // Use larger dust particles for better visibility
+                                level.addParticle(new DustParticleOptions(bubbleColor, 0.8f),
+                                        spawnPos.x, spawnPos.y, spawnPos.z, 
+                                        velocity.x * 1.1, velocity.y * 1.1, velocity.z * 1.1);
+                                // Also add a regular bubble for bubble-like appearance
+                                level.addParticle(ParticleTypes.BUBBLE, 
+                                        spawnPos.x, spawnPos.y, spawnPos.z, 
+                                        velocity.x * 1.0, velocity.y * 1.0, velocity.z * 1.0);
+                            } else {
+                                level.addParticle(ParticleTypes.BUBBLE, 
+                                        spawnPos.x, spawnPos.y, spawnPos.z, 
+                                        velocity.x * 1.1, velocity.y * 1.1, velocity.z * 1.1);
+                            }
+                        }
+                    }
+                });
             }
         }
 
@@ -507,10 +878,16 @@ public final class GadgetNet {
             Vec3 up = right.cross(forward).normalize();
             for (int k=0;k<rings;k++){
                 float rad = radius*(0.5f+k*0.5f);
-                for (int i=0;i<64;i++){
-                    double a = i/64.0*2*Math.PI;
+                float delay = k * 0.1f; // Stagger rings slightly
+                for (int i=0;i<72;i++){
+                    double a = i/72.0*2*Math.PI;
                     Vec3 off = right.scale(Math.cos(a)*rad).add(up.scale(Math.sin(a)*rad));
-                    level.addParticle(ParticleTypes.ELECTRIC_SPARK,origin.x+off.x,origin.y,origin.z+off.z,0,0.02,0);
+                    // Add outward velocity for expansion effect
+                    Vec3 vel = off.normalize().scale(0.05 + delay * 0.02);
+                    level.addParticle(ParticleTypes.ELECTRIC_SPARK,origin.x+off.x,origin.y,origin.z+off.z,vel.x,0.02+delay*0.01,vel.z);
+                    if (r.nextFloat() < 0.15f) {
+                        level.addParticle(ParticleTypes.CRIT,origin.x+off.x,origin.y,origin.z+off.z,vel.x*0.5,0.015,vel.z*0.5);
+                    }
                 }
             }
         }
@@ -519,27 +896,35 @@ public final class GadgetNet {
             java.util.Random r=new java.util.Random(seed);
             Vec3 right=dir.cross(new Vec3(0,1,0)); if(right.lengthSqr()<1e-4) right=dir.cross(new Vec3(1,0,0)); right=right.normalize();
             Vec3 up=right.cross(dir).normalize();
-            int steps=80;
+            int steps=100;
             for(int i=0;i<steps;i++){
                 double t=i/(double)steps;
                 double ang=t*coils*2*Math.PI;
+                double radius = 0.5 + Math.sin(t * Math.PI) * 0.3; // Pulsing radius
                 Vec3 pos=origin.add(dir.scale(length*t))
-                        .add(right.scale(Math.cos(ang)*0.6))
-                        .add(up.scale(Math.sin(ang)*0.6));
-                level.addParticle(ParticleTypes.ELECTRIC_SPARK,pos.x,pos.y,pos.z,0,0,0);
-                if(r.nextFloat()<0.1f) level.addParticle(ParticleTypes.ENCHANT,pos.x,pos.y,pos.z,0,0.02,0);
+                        .add(right.scale(Math.cos(ang)*radius))
+                        .add(up.scale(Math.sin(ang)*radius));
+                // Add forward velocity along the helix
+                Vec3 forwardVel = dir.scale(0.1);
+                level.addParticle(ParticleTypes.ELECTRIC_SPARK,pos.x,pos.y,pos.z,forwardVel.x,0.01,forwardVel.z);
+                if(r.nextFloat()<0.15f) level.addParticle(ParticleTypes.ENCHANT,pos.x,pos.y,pos.z,forwardVel.x*0.5,0.015,forwardVel.z*0.5);
+                if(r.nextFloat()<0.05f) level.addParticle(ParticleTypes.CRIT,pos.x,pos.y,pos.z,0,0.01,0);
             }
         }
 
         static void fireflyOrbit(ClientLevel level, Vec3 origin, Vec3 dir, long seed, float radius){
             java.util.Random r=new java.util.Random(seed);
-            int count=40;
+            int count=50;
             for(int i=0;i<count;i++){
                 double a=i/(double)count*2*Math.PI;
-                Vec3 off=new Vec3(Math.cos(a)*radius,0.1+Math.sin(a*2)*0.1,Math.sin(a)*radius);
+                double height = 0.2 + Math.sin(a*3)*0.15; // Varying height
+                Vec3 off=new Vec3(Math.cos(a)*radius,height,Math.sin(a)*radius);
                 Vec3 pos=origin.add(off);
-                level.addParticle(ParticleTypes.SPORE_BLOSSOM_AIR,pos.x,pos.y,pos.z,0,0.01,0);
-                if(i%10==0) level.addParticle(ParticleTypes.HAPPY_VILLAGER,pos.x,pos.y+0.2,pos.z,0,0.05,0);
+                // Orbital velocity
+                Vec3 vel = new Vec3(-Math.sin(a)*0.02, 0.005, Math.cos(a)*0.02);
+                level.addParticle(ParticleTypes.SPORE_BLOSSOM_AIR,pos.x,pos.y,pos.z,vel.x,vel.y,vel.z);
+                if(i%8==0) level.addParticle(ParticleTypes.HAPPY_VILLAGER,pos.x,pos.y+0.1,pos.z,vel.x*0.5,0.03,vel.z*0.5);
+                if(r.nextFloat()<0.1f) level.addParticle(ParticleTypes.END_ROD,pos.x,pos.y,pos.z,0,0.01,0);
             }
         }
 
@@ -555,15 +940,27 @@ public final class GadgetNet {
 
         static void skyBeacon(ClientLevel level, Vec3 origin, long seed, float height){
             java.util.Random r=new java.util.Random(seed);
-            int steps=(int)height;
+            int steps=(int)(height * 2);
+            // Main beam column
             for(int i=0;i<steps;i++){
                 double y=origin.y+i*0.5;
+                // Dense core beam
                 if(i%2==0) level.addParticle(ParticleTypes.END_ROD,origin.x, y, origin.z,0,0.05,0);
-                if(i%4==0) level.addParticle(ParticleTypes.ENCHANT,origin.x, y, origin.z,0,0.02,0);
+                if(i%3==0) level.addParticle(ParticleTypes.ENCHANT,origin.x, y, origin.z,0,0.02,0);
+                // Add sparkles along the beam
+                if(i%5==0 && r.nextFloat()<0.5f) {
+                    level.addParticle(ParticleTypes.FIREWORK, origin.x, y, origin.z, 
+                            (r.nextDouble()-0.5)*0.1, 0.01, (r.nextDouble()-0.5)*0.1);
+                }
             }
-            for(int j=0;j<40;j++){
-                double vx=(r.nextDouble()-0.5)*0.2, vz=(r.nextDouble()-0.5)*0.2;
-                level.addParticle(ParticleTypes.FIREWORK,origin.x,origin.y+height,origin.z,vx,-0.1,vz);
+            // Top burst effect
+            for(int j=0;j<60;j++){
+                double vx=(r.nextDouble()-0.5)*0.3, vz=(r.nextDouble()-0.5)*0.3;
+                level.addParticle(ParticleTypes.FIREWORK,origin.x,origin.y+height,origin.z,vx,-0.15,vz);
+                if(j%3==0) {
+                    level.addParticle(ParticleTypes.HAPPY_VILLAGER, origin.x, origin.y+height, origin.z, 
+                            vx*0.5, -0.1, vz*0.5);
+                }
             }
         }
 
@@ -592,15 +989,22 @@ public final class GadgetNet {
             void onHoldEnd(String id);
         }
         private static final List<Listener> LISTENERS = new ArrayList<>();
+        private static int HOLD_COUNT = 0;
 
         public static void register(Listener l) {
             if (l != null && !LISTENERS.contains(l)) LISTENERS.add(l);
         }
         static void notifyStart(String id) {
+            HOLD_COUNT++;
             for (Listener l : LISTENERS) try { l.onHoldStart(id); } catch (Throwable ignored) {}
         }
         static void notifyEnd(String id) {
+            if (HOLD_COUNT > 0) HOLD_COUNT--;
             for (Listener l : LISTENERS) try { l.onHoldEnd(id); } catch (Throwable ignored) {}
+        }
+        /** Check if any gadget effect is currently holding the menu. */
+        public static boolean isHolding() {
+            return HOLD_COUNT > 0;
         }
     }
 
@@ -637,6 +1041,241 @@ public final class GadgetNet {
                     }
                 }
             }
+        }
+    }
+
+    // ------------------------------------------------------------------------
+    // Client: 45s gadget gate to suppress unintended repeats
+    // ------------------------------------------------------------------------
+    @OnlyIn(Dist.CLIENT)
+    private static final class ClientCooldownGate {
+        private static final Map<ResourceLocation, Long> lastEndMsById = new HashMap<>();
+        /** @return true if this play is allowed and registered; false to suppress. */
+        static boolean begin(ResourceLocation id, long expectedDurationMs, int cooldownTicks) {
+            long now = System.currentTimeMillis();
+            long minGapMs = Math.max(expectedDurationMs, (long) cooldownTicks * 50L);
+            long lastEnd = lastEndMsById.getOrDefault(id, 0L);
+            if (now - lastEnd < minGapMs) return false;
+            lastEndMsById.put(id, now + expectedDurationMs);
+            // also schedule a cleanup to set it to "cooldown end" time
+            long cooldownMs = (long) cooldownTicks * 50L;
+            long finalEnd = now + Math.max(expectedDurationMs, cooldownMs);
+            ClientScheduler.scheduleMs(finalEnd - now, () -> lastEndMsById.put(id, finalEnd));
+            return true;
+        }
+    }
+
+    // ------------------------------------------------------------------------
+    // Confetti Burst (waves) — client-side only
+    // ------------------------------------------------------------------------
+    @OnlyIn(Dist.CLIENT)
+    private static final class ConfettiBurstFx {
+
+        static void play(ClientLevel level, Vec3 origin, Vec3 dir, CosmeticDef def, java.util.Random r) {
+            // Prefer 'waves' array; fallback to 'waves_json'; final fallback = legacy single pop.
+            String wavesRaw = Props.g(def, "waves");
+            if (wavesRaw == null || wavesRaw.isBlank()) wavesRaw = Props.g(def, "waves_json");
+
+            List<Wave> waves = parseWaves(wavesRaw);
+            if (waves.isEmpty()) {
+                // Legacy single colored-ish pop fallback (uses FIREWORK + HAPPY_VILLAGER)
+                int count = Props.i(def, "count", 60);
+                float coneDeg = Props.f(def, "cone_deg", 40f);
+                float coneRad = (float)Math.toRadians(coneDeg);
+                for (int i = 0; i < count; i++) {
+                    Vec3 v = FastFx.randomCone(dir, coneRad, r).scale(0.35 + r.nextDouble() * 0.25);
+                    level.addParticle(ParticleTypes.FIREWORK, origin.x, origin.y, origin.z, v.x, v.y * 0.6, v.z);
+                    if (r.nextFloat() < 0.15f) {
+                        level.addParticle(ParticleTypes.HAPPY_VILLAGER, origin.x, origin.y, origin.z, v.x * 0.2, v.y * 0.2, v.z * 0.2);
+                    }
+                }
+                return;
+            }
+
+            // Schedule each wave by its delay
+            for (Wave w : waves) {
+                ClientScheduler.scheduleMs(w.delayMs, () -> emitWave(level, origin, dir, w, r));
+            }
+        }
+
+        private static void emitWave(ClientLevel level, Vec3 origin, Vec3 dir, Wave w, java.util.Random r) {
+            float coneRad = (float)Math.toRadians(w.coneDeg);
+            for (int i = 0; i < w.count; i++) {
+                Vec3 v = FastFx.randomCone(dir, coneRad, r).scale(w.speed * (0.85 + r.nextDouble() * 0.3));
+                Vector3f color = w.colors.get(r.nextInt(w.colors.size()));
+                float size = (float)(w.sizeMin + r.nextDouble() * Math.max(0.0, w.sizeMax - w.sizeMin));
+                String shape = w.shapes.get(r.nextInt(w.shapes.size()));
+
+                // Map "shape" to a spawn pattern. Enhanced with multiple particle types for more impact.
+                switch (shape) {
+                    case "streamer" -> {
+                        // Long colorful trail with multiple particle types
+                        Vec3 p = origin;
+                        int trailLength = 6 + r.nextInt(4); // 6-9 particles per streamer
+                        for (int t = 0; t < trailLength; t++) {
+                            p = p.add(v.scale(0.12 + r.nextDouble()*0.08));
+                            float fade = 1.0f - (t / (float)trailLength) * 0.7f;
+                            float trailSize = size * fade;
+                            
+                            // Main colored dust particle
+                            level.addParticle(new DustParticleOptions(color, trailSize),
+                                    p.x, p.y, p.z, v.x * 0.2, v.y * 0.2, v.z * 0.2);
+                            
+                            // Add sparkle effects every few particles
+                            if (t % 2 == 0 && r.nextFloat() < 0.4f) {
+                                level.addParticle(ParticleTypes.END_ROD, p.x, p.y, p.z, 
+                                        v.x * 0.1, v.y * 0.1, v.z * 0.1);
+                            }
+                            // Add occasional firework particles for extra pop
+                            if (t == trailLength - 1 && r.nextFloat() < 0.3f) {
+                                level.addParticle(ParticleTypes.FIREWORK, p.x, p.y, p.z, 
+                                        v.x * 0.3, v.y * 0.3, v.z * 0.3);
+                            }
+                        }
+                    }
+                    case "disc" -> {
+                        // Enhanced disc with multiple particle layers
+                        level.addParticle(new DustParticleOptions(color, size),
+                                origin.x, origin.y, origin.z, v.x, v.y * 0.5, v.z);
+                        // Add sparkle accent
+                        if (r.nextFloat() < 0.3f) {
+                            level.addParticle(ParticleTypes.END_ROD, origin.x, origin.y, origin.z, 
+                                    v.x * 0.15, v.y * 0.15, v.z * 0.15);
+                        }
+                    }
+                    case "triangle", "rect" -> {
+                        // Enhanced shapes with more visual variety
+                        double damp = shape.equals("triangle") ? 0.65 : 0.8;
+                        level.addParticle(new DustParticleOptions(color, size),
+                                origin.x, origin.y, origin.z, v.x * damp, v.y * damp, v.z * damp);
+                        // Add occasional firework burst
+                        if (r.nextFloat() < 0.25f) {
+                            level.addParticle(ParticleTypes.FIREWORK, origin.x, origin.y, origin.z, 
+                                    v.x * 0.4, v.y * 0.4, v.z * 0.4);
+                        }
+                    }
+                    default -> {
+                        // Default with enhanced visuals
+                        level.addParticle(new DustParticleOptions(color, size),
+                                origin.x, origin.y, origin.z, v.x, v.y, v.z);
+                        if (r.nextFloat() < 0.2f) {
+                            level.addParticle(ParticleTypes.END_ROD, origin.x, origin.y, origin.z, 
+                                    v.x * 0.2, v.y * 0.2, v.z * 0.2);
+                        }
+                    }
+                }
+            }
+        }
+
+        private static List<Wave> parseWaves(@Nullable String json) {
+            if (json == null || json.isBlank()) {
+                CosmeticsLite.LOGGER.warn("[CosmeticsLite] ConfettiBurstFx: waves_json is null or blank");
+                return Collections.emptyList();
+            }
+            try {
+                // Handle escaped JSON strings (from JSON file storage)
+                String cleaned = json.trim();
+                
+                // Remove outer quotes if present
+                if (cleaned.startsWith("\"") && cleaned.endsWith("\"")) {
+                    cleaned = cleaned.substring(1, cleaned.length() - 1);
+                }
+                
+                // Unescape all escape sequences (handle escaped JSON from file)
+                // The JSON parser already unescapes once, so we get \" in the string
+                // We need to unescape those to get actual quotes
+                cleaned = cleaned.replace("\\\"", "\"");  // Unescape quotes
+                cleaned = cleaned.replace("\\\\", "\\");  // Unescape backslashes (if any remain)
+                
+                CosmeticsLite.LOGGER.debug("[CosmeticsLite] ConfettiBurstFx: Parsing waves_json (length: {})", cleaned.length());
+                
+                JsonElement root = JsonParser.parseString(cleaned);
+                JsonArray arr = root.isJsonArray() ? root.getAsJsonArray() : null;
+                if (arr == null || arr.size() == 0) {
+                    CosmeticsLite.LOGGER.warn("[CosmeticsLite] ConfettiBurstFx: waves_json parsed but not an array or empty. Root type: {}", 
+                            root != null ? root.getClass().getSimpleName() : "null");
+                    return Collections.emptyList();
+                }
+
+                List<Wave> out = new ArrayList<>(arr.size());
+                for (JsonElement el : arr) {
+                    if (!el.isJsonObject()) continue;
+                    JsonObject o = el.getAsJsonObject();
+                    Wave w = new Wave();
+                    w.delayMs = intOr(o, "delay_ms", 0);
+                    w.count   = intOr(o, "count", 32);
+                    w.coneDeg = floatOr(o,"cone_deg", 65f);
+                    w.speed   = floatOr(o,"speed", 1.0f);
+                    w.sizeMin = floatOr(o,"size_min", 0.10f);
+                    w.sizeMax = floatOr(o,"size_max", 0.20f);
+                    w.shapes  = strList(o, "shapes", List.of("disc","rect"));
+                    w.colors  = colorList(o, "colors",
+                            List.of("#ffd166","#ef476f","#06d6a0","#118ab2"));
+                    // guards
+                    if (w.sizeMax < w.sizeMin) {
+                        float tmp = w.sizeMin; w.sizeMin = w.sizeMax; w.sizeMax = tmp;
+                    }
+                    if (w.count < 1) w.count = 1;
+                    out.add(w);
+                }
+                CosmeticsLite.LOGGER.info("[CosmeticsLite] ConfettiBurstFx: Successfully parsed {} wave(s)", out.size());
+                return out;
+            } catch (Throwable t) {
+                CosmeticsLite.LOGGER.error("[CosmeticsLite] ConfettiBurstFx: Failed to parse waves_json", t);
+                return Collections.emptyList();
+            }
+        }
+
+        private static int intOr(JsonObject o, String k, int d) {
+            try { return o.has(k) ? o.get(k).getAsInt() : d; } catch (Exception e) { return d; }
+        }
+        private static float floatOr(JsonObject o, String k, float d) {
+            try { return o.has(k) ? o.get(k).getAsFloat() : d; } catch (Exception e) { return d; }
+        }
+        private static List<String> strList(JsonObject o, String k, List<String> d) {
+            try {
+                if (!o.has(k) || !o.get(k).isJsonArray()) return d;
+                List<String> out = new ArrayList<>();
+                for (JsonElement e : o.get(k).getAsJsonArray()) out.add(e.getAsString());
+                return out.isEmpty() ? d : out;
+            } catch (Exception e) { return d; }
+        }
+        private static List<Vector3f> colorList(JsonObject o, String k, List<String> defHex) {
+            List<String> hexes = defHex;
+            try {
+                if (o.has(k) && o.get(k).isJsonArray()) {
+                    hexes = new ArrayList<>();
+                    for (JsonElement e : o.get(k).getAsJsonArray()) hexes.add(e.getAsString());
+                }
+            } catch (Exception ignored) {}
+            List<Vector3f> out = new ArrayList<>();
+            for (String h : hexes) out.add(hexToColor(h));
+            if (out.isEmpty()) out.add(new Vector3f(1,1,1));
+            return out;
+        }
+
+        private static Vector3f hexToColor(String hex) {
+            String s = hex.trim();
+            if (s.startsWith("#")) s = s.substring(1);
+            try {
+                int v = (int)Long.parseLong(s, 16);
+                int r = (s.length() >= 6) ? ((v >> 16) & 0xFF) : 255;
+                int g = (s.length() >= 6) ? ((v >> 8)  & 0xFF) : 255;
+                int b = (s.length() >= 6) ? (v & 0xFF) : 255;
+                return new Vector3f(r / 255f, g / 255f, b / 255f);
+            } catch (Exception e) {
+                return new Vector3f(1f,1f,1f);
+            }
+        }
+
+        private static final class Wave {
+            int delayMs;
+            int count;
+            float coneDeg;
+            float speed;
+            float sizeMin, sizeMax;
+            List<String> shapes;
+            List<Vector3f> colors;
         }
     }
 

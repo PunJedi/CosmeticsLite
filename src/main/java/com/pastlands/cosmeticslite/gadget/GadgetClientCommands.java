@@ -431,6 +431,14 @@ public final class GadgetClientCommands {
         Minecraft mc = Minecraft.getInstance();
         if (mc == null || mc.player == null || id == null) return;
 
+        // If there's already a fire sequence in progress, cancel it first
+        if (armedTicks >= 0 && armedId != null) {
+            // Cancel previous fire sequence
+            armedId = null;
+            armedTicks = -1;
+        }
+
+        // Double-check cooldown (in case there was a race condition)
         long rem = remainingMs(id);
         if (rem > 0L) {
             mc.player.displayClientMessage(
@@ -440,8 +448,16 @@ public final class GadgetClientCommands {
             return;
         }
 
+        // Clear any previous reopen state to ensure a fresh start
+        reopenCosmeticsAfterUse = false;
+        reopenCosmeticsTicks = -1;
+        waitingForHold = false;
+        holdSafetyTicks = -1;
+
+        // Ensure gadget is equipped (this is safe to call even if already equipped)
         ensureEquippedBeforeUse(id);
 
+        // Set up the fire sequence
         armedId = id;
         armedTicks = Math.max(0, delayTicks);
         reopenCosmeticsAfterUse = true;
@@ -449,6 +465,9 @@ public final class GadgetClientCommands {
         if (armedTicks > 0) {
             int secs = Math.max(1, (int)Math.ceil(armedTicks / 20.0));
             mc.player.displayClientMessage(Component.literal("Firing in " + secs + "…"), true);
+        } else {
+            // If no delay, fire immediately
+            mc.player.displayClientMessage(Component.literal("Firing gadget…"), true);
         }
     }
 
@@ -467,7 +486,7 @@ public final class GadgetClientCommands {
         }
 
         // Cosmetics-driven countdown → fire once
-        if (armedTicks >= 0) {
+        if (armedTicks >= 0 && armedId != null) {
             if (armedTicks > 0) {
                 armedTicks--;
                 if (armedTicks % 10 == 0) {
@@ -479,6 +498,7 @@ public final class GadgetClientCommands {
                 }
             } else {
                 ResourceLocation id = armedId;
+                // Clear state immediately to prevent re-entry
                 armedId = null;
                 armedTicks = -1;
 
@@ -489,19 +509,22 @@ public final class GadgetClientCommands {
                         if (ch == null) { GadgetNet.init(); ch = GadgetNet.channel(); }
                         if (ch != null) {
                             ch.sendToServer(new GadgetNet.UseGadgetC2S(id));
-                            noteJustUsed(id);
+                            // Don't set cooldown here - wait for server confirmation via PlayGadgetFxS2C
+                            // The ClientCooldownGate in GadgetNet will handle cooldown when FX plays
                         } else {
                             mc.player.displayClientMessage(Component.literal("Gadget system not ready yet."), true);
                         }
 
                         if (reopenCosmeticsAfterUse) {
                             CosmeticDef def = CosmeticsRegistry.get(id);
+                            // Calculate minimum wait time, but we'll actually wait for the hold to clear
                             int holdMs = (def != null)
                                     ? GadgetTiming.holdMillisFor(def.properties())
                                     : (int)Math.max(900, Math.min(6000, durationMillisFor(id) + 220));
-                            // clamp and convert to ticks (ceil)
-                            holdMs = Math.max(900, Math.min(6000, holdMs));
-                            reopenCosmeticsTicks = Math.max(20, (holdMs + 49) / 50);
+                            // Set a minimum timer, but we'll check hold state before actually reopening
+                            // Add extra buffer to account for network delay and effect start time
+                            holdMs = Math.max(holdMs + 500, 1500); // Add 500ms buffer, minimum 1.5s
+                            reopenCosmeticsTicks = Math.max(30, (holdMs + 49) / 50); // Minimum 1.5s
                         }
                     }
                 }
@@ -509,21 +532,30 @@ public final class GadgetClientCommands {
         }
 
         // Reopen Cosmetics screen when done — HOLD-AWARE
+        // Always check hold state first, even if timer hasn't expired
         if (reopenCosmeticsTicks >= 0) {
-            if (--reopenCosmeticsTicks <= 0) {
+            // If hold is active, extend the timer to keep checking
+            if (isMenuHoldActive()) {
+                // Keep timer alive while hold is active (add 1 second buffer)
+                reopenCosmeticsTicks = Math.max(reopenCosmeticsTicks, 20);
+                waitingForHold = true;
+                holdSafetyTicks = 200; // ~10s max wait (200 * 50ms)
+            } else if (waitingForHold) {
+                // Hold just cleared, reopen immediately
+                waitingForHold = false;
                 reopenCosmeticsTicks = -1;
-                if (isMenuHoldActive()) {
-                    waitingForHold = true;
-                    holdSafetyTicks = 200; // ~10s max wait (200 * 50ms)
-                } else {
-                    reopenCosmeticsAfterUse = false;
-                    reopenCosmeticsScreen();
-                }
+                reopenCosmeticsAfterUse = false;
+                reopenCosmeticsScreen();
+            } else if (--reopenCosmeticsTicks <= 0) {
+                // Timer expired and no hold active, reopen
+                reopenCosmeticsTicks = -1;
+                reopenCosmeticsAfterUse = false;
+                reopenCosmeticsScreen();
             }
         }
 
         // While waiting for hold to clear, poll each tick
-        if (waitingForHold) {
+        if (waitingForHold && reopenCosmeticsTicks < 0) {
             if (!isMenuHoldActive() || --holdSafetyTicks <= 0) {
                 waitingForHold = false;
                 reopenCosmeticsAfterUse = false;
@@ -535,7 +567,20 @@ public final class GadgetClientCommands {
     private static void reopenCosmeticsScreen() {
         Minecraft mc = Minecraft.getInstance();
         if (mc != null) {
-            mc.setScreen(new CosmeticsChestScreen());
+            // Clear any leftover armed state when reopening menu (safety cleanup)
+            armedId = null;
+            armedTicks = -1;
+            
+            CosmeticsChestScreen screen = new CosmeticsChestScreen();
+            mc.setScreen(screen);
+            // Schedule button update after screen is fully initialized
+            // The rebuildGrid in init() should auto-select the equipped gadget
+            mc.execute(() -> {
+                if (mc.screen == screen) {
+                    // Force update of action buttons after initialization
+                    screen.updateActionButtons();
+                }
+            });
         }
     }
 
