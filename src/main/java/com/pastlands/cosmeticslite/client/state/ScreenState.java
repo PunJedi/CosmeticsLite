@@ -125,22 +125,10 @@ public final class ScreenState {
 
     public void setSelectedIndex(String typeKey, int globalIndex) {
         selectedIndex.put(typeKey, globalIndex);
-        // clear placeholders if we have a real selection
-        if (globalIndex >= 0) {
-            placeholderLocal.put(typeKey, -1);
-            placeholderPage.put(typeKey, -1);
-        }
     }
 
     public void clearSelection(String typeKey) {
         selectedIndex.put(typeKey, -1);
-        placeholderLocal.put(typeKey, -1);
-        placeholderPage.put(typeKey, -1);
-    }
-
-    public boolean hasExplicitHighlight(String typeKey) {
-        return getSelectedIndex(typeKey) >= 0
-                || getPlaceholderLocal(typeKey) >= 0;
     }
 
     // -------------------- Placeholders --------------------
@@ -155,11 +143,9 @@ public final class ScreenState {
     public void setPlaceholder(String typeKey, int localIndex, int pageIndex) {
         placeholderLocal.put(typeKey, localIndex);
         placeholderPage.put(typeKey, pageIndex);
-        // clear real selection when we set a placeholder
-        selectedIndex.put(typeKey, -1);
     }
 
-    public void clearPlaceholders(String typeKey) {
+    public void clearPlaceholder(String typeKey) {
         placeholderLocal.put(typeKey, -1);
         placeholderPage.put(typeKey, -1);
     }
@@ -168,15 +154,35 @@ public final class ScreenState {
         clearSelection(TYPE_PARTICLES);
         clearSelection(TYPE_HATS);
         clearSelection(TYPE_CAPES);
-        clearSelection(TYPE_PETS);      // NEW: clear pets selection
+        clearSelection(TYPE_PETS);
     }
 
-    // -------------------- Status --------------------
-    public void setStatus(String msg, int ticks) {
-        statusMsg = msg;
-        statusTicks = Math.max(0, ticks);
+    // -------------------- Preview drag --------------------
+    public boolean isDraggingPreview() {
+        return draggingPreview;
     }
 
+    public void setDraggingPreview(boolean dragging) {
+        this.draggingPreview = dragging;
+    }
+
+    public double getLastDragX() {
+        return lastDragX;
+    }
+
+    public void setLastDragX(double x) {
+        this.lastDragX = x;
+    }
+
+    public float getDragAccumX() {
+        return dragAccumX;
+    }
+
+    public void setDragAccumX(float accum) {
+        this.dragAccumX = accum;
+    }
+
+    // -------------------- Status flash --------------------
     public String getStatusMsg() {
         return statusMsg;
     }
@@ -185,15 +191,23 @@ public final class ScreenState {
         return statusTicks;
     }
 
-    /** Decrements the status timer; returns true if message expired this tick. */
-    public boolean tickStatus() {
+    public void setStatus(String msg, int ticks) {
+        this.statusMsg = msg;
+        this.statusTicks = ticks;
+    }
+
+    public void tickStatus() {
         if (statusTicks > 0) {
             statusTicks--;
-            if (statusTicks == 0) {
+            if (statusTicks <= 0) {
                 statusMsg = null;
-                return true;
             }
         }
-        return false;
+    }
+
+    public void clearStatus() {
+        statusMsg = null;
+        statusTicks = 0;
     }
 }
+

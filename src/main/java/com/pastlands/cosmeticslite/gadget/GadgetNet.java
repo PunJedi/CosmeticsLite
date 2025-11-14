@@ -222,6 +222,11 @@ public static record PlayGadgetFxS2C(ResourceLocation gadgetId,
             java.util.Random r = new java.util.Random(seed);
             switch (pattern) {
                 case "confetti_burst" -> ConfettiBurstFx.play(level, origin, dir, def, r);
+                case "confetti_cyclone" -> FastFx.confettiCyclone(level, origin, seed,
+                        Props.i(def, "count", 400),
+                        Props.f(def, "height", 6f),
+                        Props.f(def, "radius", 2.5f),
+                        Props.ms(def, "duration_ms", 4000L));
                 case "spark_fan" -> {
                     int count  = Props.i(def, "count", 50);
                     float arcDeg = Props.f(def, "arc_deg", 70f);
@@ -256,42 +261,75 @@ public static record PlayGadgetFxS2C(ResourceLocation gadgetId,
                 }
                 // Stacked spinning spark rings (runs for ~duration_ms)
                 case "spark_ring_stack" -> {
-                    long  showMs    = Props.ms(def, "duration_ms", 4000L);
-                    int   rateMs    = (int) Props.ms(def, "ring_rate_ms", 200L);
-                    float height    = Props.f(def, "stack_height", 1.6f);       // feet → head
+                    long  showMsRaw = Props.ms(def, "duration_ms", 4000L);
+                    int   rateMsRaw = (int) Props.ms(def, "ring_rate_ms", 200L);
+                    final long  showMs    = Math.max(200L, Math.min(8000L, showMsRaw)); // hard clamp
+                    final int   rateMs    = Math.max(40, Math.min(500, rateMsRaw));     // hard clamp
+                    float height    = Props.f(def, "stack_height", 1.0f);       // height offset from origin
                     int   rings     = Math.max(1, Props.i(def, "stack_rings", 4));
                     float radius    = Props.f(def, "ring_radius", 1.2f);
                     int   perRing   = Math.max(8, Props.i(def, "ring_particles", 40));
-                    double spinSpeed = Props.f(def, "spin_speed", 0.015f);      // radians/ms
-
-                    showMs = Math.max(200L, Math.min(8000L, showMs)); // hard clamp
-                    rateMs = Math.max(40, Math.min(500, rateMs));     // hard clamp
+                    double spinSpeed = Props.f(def, "spin_speed", 0.05f);      // radians/ms (increased for visible rotation)
 
                     for (int t = 0; t < showMs; t += rateMs) {
                         final int ti = t;
                         ClientScheduler.scheduleMs(ti, () -> {
+                            Minecraft mc = Minecraft.getInstance();
+                            if (mc == null || mc.player == null || mc.level != level) return;
+                            
+                            Vec3 playerPos = mc.player.getEyePosition().add(0, -0.8, 0);
                             double baseRot = ti * spinSpeed;
+                            
+                            // Calculate expansion progress (0.0 to 1.0)
+                            float expansionProgress = ti / (float)showMs;
+                            
                             for (int i = 0; i < rings; i++) {
                                 float y = (rings == 1) ? 0f : (i / (float) (rings - 1)) * height;
-                                double rot = baseRot + i * 0.5; // stagger each ring
+                                double rot = baseRot + i * 0.8;
+                                
+                                // Current radius expands from initial to 3x over time
+                                float currentRadius = radius * (1.0f + expansionProgress * 2.0f);
 
                                 for (int k = 0; k < perRing; k++) {
                                     double a  = rot + (2.0 * Math.PI * k / perRing);
-                                    double cx = Math.cos(a) * radius;
-                                    double cz = Math.sin(a) * radius;
-                                    double px = origin.x + cx;
-                                    double py = origin.y + y;
-                                    double pz = origin.z + cz;
+                                    double cosA = Math.cos(a);
+                                    double sinA = Math.sin(a);
+                                    
+                                    // Position on expanding ring
+                                    double px = playerPos.x + cosA * currentRadius;
+                                    double py = playerPos.y + y;
+                                    double pz = playerPos.z + sinA * currentRadius;
 
-                                    // Main spark particles with slight outward motion
-                                    double vx = cx * 0.01;
-                                    double vz = cz * 0.01;
-                                    level.addParticle(ParticleTypes.ELECTRIC_SPARK, px, py, pz, vx, 0.02, vz);
-                                    if (r.nextFloat() < 0.25f) {
-                                        level.addParticle(ParticleTypes.CRIT, px, py, pz, vx * 0.5, 0.015, vz * 0.5);
+                                    // Strong outward expansion velocity (particles fly away)
+                                    double expansionSpeed = 0.08 + expansionProgress * 0.12; // Faster as it expands
+                                    double vx = cosA * expansionSpeed;
+                                    double vz = sinA * expansionSpeed;
+                                    double vy = 0.01 + (r.nextDouble() - 0.5) * 0.02; // Slight vertical variation
+                                    
+                                    // Fade effect: particles become less visible as they expand
+                                    float fadeFactor = 1.0f - expansionProgress * 0.6f; // Fade to 40% visibility
+                                    if (r.nextFloat() > fadeFactor) continue; // Skip some particles for fade effect
+                                    
+                                    // Main spark particles with expansion
+                                    level.addParticle(ParticleTypes.ELECTRIC_SPARK, px, py, pz, vx, vy, vz);
+                                    
+                                    // Add more particles for density, but fade them too
+                                    if (r.nextFloat() < 0.25f * fadeFactor) {
+                                        level.addParticle(ParticleTypes.CRIT, px, py, pz, vx * 0.7, vy * 0.7, vz * 0.7);
                                     }
-                                    if (r.nextFloat() < 0.1f) {
-                                        level.addParticle(ParticleTypes.ENCHANT, px, py, pz, 0, 0.01, 0);
+                                    if (r.nextFloat() < 0.12f * fadeFactor) {
+                                        level.addParticle(ParticleTypes.ENCHANT, px, py, pz, vx * 0.5, vy * 0.5, vz * 0.5);
+                                    }
+                                    
+                                    // Add occasional trailing particles for expansion effect
+                                    if (r.nextFloat() < 0.15f * fadeFactor) {
+                                        // Spawn a trailing particle slightly behind
+                                        double trailOffset = 0.15;
+                                        level.addParticle(ParticleTypes.END_ROD, 
+                                                px - cosA * trailOffset, 
+                                                py, 
+                                                pz - sinA * trailOffset, 
+                                                vx * 0.6, vy * 0.6, vz * 0.6);
                                     }
                                 }
                             }
@@ -391,45 +429,113 @@ public static record PlayGadgetFxS2C(ResourceLocation gadgetId,
                 }
             });
 
-            // 3) gear_spark_emitter — stacked rings
+            // 3) gear_spark_emitter — stacked rings that expand outward and fade
             register(rl("cosmeticslite","gear_spark_emitter"), new IGadgetAction() {
                 @Override public int cooldownTicks(ServerPlayer sp, @Nullable CosmeticDef def) { return GLOBAL_COOLDOWN_TICKS; }
                 @Override @OnlyIn(Dist.CLIENT)
                 public void clientFx(ClientLevel level, Vec3 origin, Vec3 dir, long seed, CosmeticDef def) {
                     final long  showMs     = Math.max(200L, Math.min(8000L, Props.ms(def, "duration_ms", 4000L)));
                     final int   rateMs     = (int) Math.max(40, Math.min(500, Props.ms(def, "ring_rate_ms", 200L)));
-                    final float height     = Props.f(def, "stack_height", 1.6f);
+                    final float height     = Props.f(def, "stack_height", 1.0f);
                     final int   rings      = Math.max(1, Props.i(def, "stack_rings", 4));
                     final float radius     = Props.f(def, "ring_radius", 1.8f);
                     final int   perRing    = Math.max(8, Props.i(def, "ring_particles", 42));
-                    final double spinSpeed = Props.f(def, "spin_speed", 0.015f);
-                    final var snd = Props.rl(def, "sound", rl("minecraft","block.anvil.place"));
-                    final float vol = Props.f(def, "volume", 0.9f);
-                    final float pit = Props.f(def, "pitch", 0.9f);
+                    final double spinSpeed = Props.f(def, "spin_speed", 0.05f); // Increased for visible rotation
+                    final var snd = Props.rl(def, "sound", rl("minecraft","block.iron_door.open"));
+                    final float vol = Props.f(def, "volume", 0.7f);
+                    final float pit = Props.f(def, "pitch", 0.8f);
 
                     java.util.Random r = new java.util.Random(seed);
+                    
+                    // Play spooling sound that changes pitch as rings expand
+                    // Start high pitch, gradually lower as effect progresses (like unwinding)
+                    for (int s = 0; s < showMs; s += 150) { // More frequent for smoother spooling effect
+                        final int soundTime = s;
+                        ClientScheduler.scheduleMs(soundTime, () -> {
+                            Minecraft mc = Minecraft.getInstance();
+                            if (mc != null && mc.player != null && mc.level == level) {
+                                Vec3 playerPos = mc.player.getEyePosition().add(0, -0.8, 0);
+                                // Pitch starts high and decreases over time (spool unwinding effect)
+                                float progress = soundTime / (float)showMs;
+                                float spoolPitch = 1.2f - (progress * 0.5f); // Start at 1.2, end at 0.7
+                                float pitchVar = spoolPitch + (r.nextFloat() - 0.5f) * 0.15f;
+                                FastFx.playSound(level, playerPos, snd, vol * 0.7f, pitchVar);
+                                
+                                // Add occasional mechanical click/clunk sound
+                                if (r.nextFloat() < 0.2f) {
+                                    ResourceLocation clickSound = ResourceLocation.fromNamespaceAndPath("minecraft", "block.iron_trapdoor.open");
+                                    FastFx.playSound(level, playerPos, clickSound, vol * 0.4f, 1.0f + r.nextFloat() * 0.3f);
+                                }
+                            }
+                        });
+                    }
+
+                    // Track expansion for each ring wave
                     for (int t = 0; t < showMs; t += rateMs) {
                         final int ti = t;
                         ClientScheduler.scheduleMs(ti, () -> {
+                            Minecraft mc = Minecraft.getInstance();
+                            if (mc == null || mc.player == null || mc.level != level) return;
+                            
+                            Vec3 playerPos = mc.player.getEyePosition().add(0, -0.8, 0);
                             double baseRot = ti * spinSpeed;
+                            
+                            // Calculate expansion progress (0.0 to 1.0)
+                            float expansionProgress = ti / (float)showMs;
+                            
                             for (int i = 0; i < rings; i++) {
                                 float y = (rings == 1) ? 0f : (i / (float) (rings - 1)) * height;
-                                double rot = baseRot + i * 0.5;
+                                double rot = baseRot + i * 0.8;
+                                
+                                // Current radius expands from initial to 3x over time
+                                float currentRadius = radius * (1.0f + expansionProgress * 2.0f);
+                                
                                 for (int k = 0; k < perRing; k++) {
                                     double a  = rot + (2.0 * Math.PI * k / perRing);
-                                    double px = origin.x + Math.cos(a) * radius;
-                                    double py = origin.y + y;
-                                    double pz = origin.z + Math.sin(a) * radius;
+                                    double cosA = Math.cos(a);
+                                    double sinA = Math.sin(a);
+                                    
+                                    // Position on expanding ring
+                                    double px = playerPos.x + cosA * currentRadius;
+                                    double py = playerPos.y + y;
+                                    double pz = playerPos.z + sinA * currentRadius;
 
-                                    level.addParticle(ParticleTypes.ELECTRIC_SPARK, px, py, pz, 0, 0.02, 0);
-                                    if (r.nextFloat() < 0.18f) {
-                                        level.addParticle(ParticleTypes.CRIT, px, py, pz, 0, 0.01, 0);
+                                    // Strong outward expansion velocity (particles fly away)
+                                    double expansionSpeed = 0.08 + expansionProgress * 0.12; // Faster as it expands
+                                    double vx = cosA * expansionSpeed;
+                                    double vz = sinA * expansionSpeed;
+                                    double vy = 0.01 + (r.nextDouble() - 0.5) * 0.02; // Slight vertical variation
+                                    
+                                    // Fade effect: particles become less visible as they expand
+                                    // Spawn fewer particles as expansion progresses
+                                    float fadeFactor = 1.0f - expansionProgress * 0.6f; // Fade to 40% visibility
+                                    if (r.nextFloat() > fadeFactor) continue; // Skip some particles for fade effect
+                                    
+                                    // Main spark particles with expansion
+                                    level.addParticle(ParticleTypes.ELECTRIC_SPARK, px, py, pz, vx, vy, vz);
+                                    
+                                    // Add more particles for density, but fade them too
+                                    if (r.nextFloat() < 0.25f * fadeFactor) {
+                                        level.addParticle(ParticleTypes.CRIT, px, py, pz, vx * 0.7, vy * 0.7, vz * 0.7);
+                                    }
+                                    if (r.nextFloat() < 0.12f * fadeFactor) {
+                                        level.addParticle(ParticleTypes.ENCHANT, px, py, pz, vx * 0.5, vy * 0.5, vz * 0.5);
+                                    }
+                                    
+                                    // Add occasional trailing particles for expansion effect
+                                    if (r.nextFloat() < 0.15f * fadeFactor) {
+                                        // Spawn a trailing particle slightly behind
+                                        double trailOffset = 0.15;
+                                        level.addParticle(ParticleTypes.END_ROD, 
+                                                px - cosA * trailOffset, 
+                                                py, 
+                                                pz - sinA * trailOffset, 
+                                                vx * 0.6, vy * 0.6, vz * 0.6);
                                     }
                                 }
                             }
                         });
                     }
-                    FastFx.playSound(level, origin, snd, vol, pit);
                 }
             });
 
@@ -871,6 +977,186 @@ public static record PlayGadgetFxS2C(ResourceLocation gadgetId,
             }
         }
 
+        static void confettiCyclone(ClientLevel level, Vec3 origin, long seed, int totalCount, float height, float baseRadius, long durationMs) {
+            java.util.Random r = new java.util.Random(seed);
+            
+            // Track start time for absolute duration checking
+            final long startTimeMs = System.currentTimeMillis();
+            
+            // Use atomic flag to stop spawning exactly at duration
+            final java.util.concurrent.atomic.AtomicBoolean isActive = new java.util.concurrent.atomic.AtomicBoolean(true);
+            
+            // Schedule a task to stop spawning at exactly the duration
+            ClientScheduler.scheduleMs(durationMs, () -> {
+                isActive.set(false);
+            });
+            
+            // Vibrant confetti colors
+            Vector3f[] colors = new Vector3f[] {
+                new Vector3f(1.0f, 0.23f, 0.19f), // Red (#ff3b30)
+                new Vector3f(1.0f, 0.84f, 0.04f), // Yellow (#ffd60a)
+                new Vector3f(0.20f, 0.78f, 0.35f), // Green (#34c759)
+                new Vector3f(0.04f, 0.52f, 1.0f), // Blue (#0a84ff)
+                new Vector3f(1.0f, 0.62f, 0.04f), // Orange (#ff9f0a)
+                new Vector3f(0.75f, 0.35f, 0.95f), // Purple (#bf5af2)
+                new Vector3f(0.39f, 0.82f, 1.0f), // Light Blue (#64d2ff)
+                new Vector3f(1.0f, 0.27f, 0.23f), // Bright Red (#ff453a)
+                new Vector3f(0.19f, 0.82f, 0.35f), // Bright Green (#30d158)
+                new Vector3f(1.0f, 1.0f, 1.0f)    // White
+            };
+            
+            // Play whoosh sound at start
+            ResourceLocation whooshSound = ResourceLocation.fromNamespaceAndPath("minecraft", "entity.ender_dragon.flap");
+            playSound(level, origin, whooshSound, 0.6f, 0.8f);
+            
+            // Calculate ticks for smooth continuous spawning - ensure we stop exactly at duration
+            int totalTicks = (int)(durationMs / 50L); // ~80 ticks over 4 seconds
+            int particlesPerTick = Math.max(8, totalCount / totalTicks); // More particles per tick for density
+            
+            // Spawn particles continuously every tick for smooth cyclone - STRICT DURATION LIMIT
+            for (int tick = 0; tick < totalTicks; tick++) {
+                final int currentTick = tick;
+                // Schedule at exact tick - will not fire after duration
+                ClientScheduler.schedule(tick, () -> {
+                    // Double-check: both flag and elapsed time must be valid
+                    long elapsedMs = System.currentTimeMillis() - startTimeMs;
+                    if (!isActive.get() || elapsedMs >= durationMs) return; // Stop spawning if duration exceeded
+                    
+                    Minecraft mc = Minecraft.getInstance();
+                    if (mc == null || mc.player == null || mc.level != level) return;
+                    
+                    // Get player's current position - cyclone follows player
+                    Vec3 playerPos = mc.player.getEyePosition().add(0, -0.5, 0);
+                    
+                    float timeProgress = currentTick / (float)totalTicks;
+                    
+                    // Cyclone parameters - create a dense tornado effect
+                    float currentHeight = height * (0.4f + timeProgress * 0.6f); // Grows from 40% to 100%
+                    float currentRadius = baseRadius * (0.9f + timeProgress * 0.2f); // Slight expansion
+                    float spinSpeed = 0.25f + timeProgress * 0.15f; // Faster spin over time
+                    
+                    // Calculate rotation angle for this tick (spiraling upward)
+                    double baseAngle = currentTick * spinSpeed;
+                    
+                    // Dense particle count - more particles for tornado effect
+                    int particlesThisTick = particlesPerTick + (int)(particlesPerTick * (1.2f - timeProgress * 0.4f));
+                    
+                    for (int i = 0; i < particlesThisTick; i++) {
+                        // Check both flag and elapsed time multiple times during loop to stop immediately
+                        long elapsedCheck = System.currentTimeMillis() - startTimeMs;
+                        if (!isActive.get() || elapsedCheck >= durationMs) break; // Stop spawning if duration exceeded
+                        
+                        // Distribute particles in a tornado shape - denser at bottom, wider at top
+                        float normalizedY = r.nextFloat(); // 0 to 1
+                        float layerY = (normalizedY * currentHeight) - (currentHeight * 0.2f); // Start slightly below player
+                        
+                        // Tornado shape: narrower at bottom, wider at top
+                        float radiusFactor = 0.3f + normalizedY * 0.7f; // 0.3 at bottom, 1.0 at top
+                        double radiusVariation = currentRadius * radiusFactor * (0.85f + r.nextFloat() * 0.3f);
+                        
+                        // Spiral angle - tight spiral for tornado effect
+                        // More rotations at higher Y for tornado twist
+                        double spiralTwist = normalizedY * Math.PI * 6; // 6 full rotations up the column
+                        double angle = baseAngle + spiralTwist;
+                        
+                        // Add some chaos for tornado effect - particles don't follow perfect spiral
+                        double chaosAngle = (r.nextDouble() - 0.5) * 0.3; // ±0.3 radians of chaos
+                        angle += chaosAngle;
+                        
+                        // Position on tornado spiral
+                        double x = Math.cos(angle) * radiusVariation;
+                        double z = Math.sin(angle) * radiusVariation;
+                        
+                        Vec3 particlePos = playerPos.add(x, layerY, z);
+                        
+                        // Velocity - strong upward spiral motion for tornado
+                        double upwardVel = 0.12 + normalizedY * 0.15; // Stronger upward at top
+                        double spinVel = spinSpeed * 0.4; // Strong tangential velocity
+                        double inwardVel = -0.02 * (1.0 - normalizedY); // Slight inward pull at bottom
+                        
+                        // Tangential velocity (perpendicular to radius)
+                        double vx = Math.cos(angle + Math.PI/2) * spinVel + Math.cos(angle) * inwardVel;
+                        double vy = upwardVel + (r.nextDouble() - 0.5) * 0.06; // Upward with variation
+                        double vz = Math.sin(angle + Math.PI/2) * spinVel + Math.sin(angle) * inwardVel;
+                        
+                        // Choose random color
+                        Vector3f color = colors[r.nextInt(colors.length)];
+                        float size = 0.18f + r.nextFloat() * 0.25f; // Larger particles for visibility
+                        
+                        // Main confetti particle - dense tornado
+                        level.addParticle(new DustParticleOptions(color, size),
+                                particlePos.x, particlePos.y, particlePos.z,
+                                vx, vy, vz);
+                        
+                        // Add more particles for density - tornado should be thick
+                        if (r.nextFloat() < 0.4f && isActive.get()) {
+                            // Secondary particle slightly offset
+                            Vector3f altColor = colors[r.nextInt(colors.length)];
+                            level.addParticle(new DustParticleOptions(altColor, size * 0.8f),
+                                    particlePos.x + (r.nextDouble() - 0.5) * 0.1,
+                                    particlePos.y + (r.nextDouble() - 0.5) * 0.1,
+                                    particlePos.z + (r.nextDouble() - 0.5) * 0.1,
+                                    vx * 0.9, vy * 0.9, vz * 0.9);
+                        }
+                        
+                        // Add sparkle particles for tornado shimmer
+                        if (r.nextFloat() < 0.2f && isActive.get()) {
+                            level.addParticle(ParticleTypes.END_ROD,
+                                    particlePos.x, particlePos.y, particlePos.z,
+                                    vx * 0.6, vy * 0.6, vz * 0.6);
+                        }
+                    }
+                });
+            }
+            
+            // Final upward burst at the end - schedule BEFORE duration ends
+            ClientScheduler.scheduleMs(durationMs - 150, () -> {
+                // Double-check: both flag and elapsed time must be valid
+                long elapsedMs = System.currentTimeMillis() - startTimeMs;
+                if (!isActive.get() || elapsedMs >= durationMs) return; // Stop if duration exceeded
+                
+                Minecraft mc = Minecraft.getInstance();
+                if (mc == null || mc.player == null || mc.level != level) return;
+                
+                Vec3 playerPos = mc.player.getEyePosition().add(0, -0.5, 0);
+                
+                // Play burst sound
+                ResourceLocation burstSound = ResourceLocation.fromNamespaceAndPath("minecraft", "entity.firework_rocket.launch");
+                playSound(level, playerPos, burstSound, 0.8f, 1.2f);
+                
+                // Massive upward burst
+                for (int i = 0; i < 120; i++) {
+                    // Check both flag and elapsed time during burst loop
+                    long elapsedCheck = System.currentTimeMillis() - startTimeMs;
+                    if (!isActive.get() || elapsedCheck >= durationMs) break; // Stop if duration exceeded
+                    
+                    double angle = r.nextDouble() * Math.PI * 2;
+                    double radius = baseRadius * (0.5 + r.nextDouble() * 1.5);
+                    double x = Math.cos(angle) * radius;
+                    double z = Math.sin(angle) * radius;
+                    
+                    Vector3f color = colors[r.nextInt(colors.length)];
+                    float size = 0.2f + r.nextFloat() * 0.3f;
+                    
+                    // Strong upward velocity
+                    double vx = (r.nextDouble() - 0.5) * 0.15;
+                    double vy = 0.3 + r.nextDouble() * 0.4; // Strong upward
+                    double vz = (r.nextDouble() - 0.5) * 0.15;
+                    
+                    level.addParticle(new DustParticleOptions(color, size),
+                            playerPos.x + x, playerPos.y, playerPos.z + z,
+                            vx, vy, vz);
+                    
+                    // Add firework particles for the burst
+                    if (r.nextFloat() < 0.3f && isActive.get()) {
+                        level.addParticle(ParticleTypes.FIREWORK,
+                                playerPos.x + x, playerPos.y, playerPos.z + z,
+                                vx * 0.8, vy * 0.8, vz * 0.8);
+                    }
+                }
+            });
+        }
+
         static void expandingRing(ClientLevel level, Vec3 origin, Vec3 dir, long seed, float radius, int rings) {
             java.util.Random r = new java.util.Random(seed);
             Vec3 right = dir.cross(new Vec3(0,1,0)).normalize();
@@ -1094,11 +1380,20 @@ public static record PlayGadgetFxS2C(ResourceLocation gadgetId,
 
             // Schedule each wave by its delay
             for (Wave w : waves) {
-                ClientScheduler.scheduleMs(w.delayMs, () -> emitWave(level, origin, dir, w, r));
+                final Wave wave = w;
+                ClientScheduler.scheduleMs(w.delayMs, () -> emitWave(level, origin, dir, wave, r));
             }
         }
 
         private static void emitWave(ClientLevel level, Vec3 origin, Vec3 dir, Wave w, java.util.Random r) {
+            // Play fireworks sound for each wave with varied pitch
+            Minecraft mc = Minecraft.getInstance();
+            if (mc != null && mc.player != null) {
+                float pitch = 0.9f + r.nextFloat() * 0.3f; // Vary pitch between 0.9 and 1.2
+                float volume = 0.5f + r.nextFloat() * 0.3f; // Vary volume between 0.5 and 0.8
+                ResourceLocation sound = ResourceLocation.fromNamespaceAndPath("minecraft", "entity.firework_rocket.blast");
+                FastFx.playSound(level, origin, sound, volume, pitch);
+            }
             float coneRad = (float)Math.toRadians(w.coneDeg);
             for (int i = 0; i < w.count; i++) {
                 Vec3 v = FastFx.randomCone(dir, coneRad, r).scale(w.speed * (0.85 + r.nextDouble() * 0.3));
@@ -1109,58 +1404,98 @@ public static record PlayGadgetFxS2C(ResourceLocation gadgetId,
                 // Map "shape" to a spawn pattern. Enhanced with multiple particle types for more impact.
                 switch (shape) {
                     case "streamer" -> {
-                        // Long colorful trail with multiple particle types
+                        // Long colorful trail with multiple particle types - make it very visible
                         Vec3 p = origin;
-                        int trailLength = 6 + r.nextInt(4); // 6-9 particles per streamer
+                        int trailLength = 8 + r.nextInt(5); // 8-12 particles per streamer for longer trails
                         for (int t = 0; t < trailLength; t++) {
-                            p = p.add(v.scale(0.12 + r.nextDouble()*0.08));
-                            float fade = 1.0f - (t / (float)trailLength) * 0.7f;
-                            float trailSize = size * fade;
+                            p = p.add(v.scale(0.10 + r.nextDouble()*0.10));
+                            float fade = 1.0f - (t / (float)trailLength) * 0.6f; // Less fade for more visibility
+                            float trailSize = size * fade * 1.2f; // Make particles larger
                             
-                            // Main colored dust particle
+                            // Main colored dust particle - ensure it's visible
                             level.addParticle(new DustParticleOptions(color, trailSize),
-                                    p.x, p.y, p.z, v.x * 0.2, v.y * 0.2, v.z * 0.2);
+                                    p.x, p.y, p.z, v.x * 0.15, v.y * 0.15, v.z * 0.15);
                             
-                            // Add sparkle effects every few particles
-                            if (t % 2 == 0 && r.nextFloat() < 0.4f) {
-                                level.addParticle(ParticleTypes.END_ROD, p.x, p.y, p.z, 
+                            // Add additional colored particles for density
+                            if (t % 2 == 0) {
+                                Vector3f altColor = w.colors.get(r.nextInt(w.colors.size()));
+                                level.addParticle(new DustParticleOptions(altColor, trailSize * 0.8f),
+                                        p.x + (r.nextDouble() - 0.5) * 0.1, 
+                                        p.y + (r.nextDouble() - 0.5) * 0.1, 
+                                        p.z + (r.nextDouble() - 0.5) * 0.1,
                                         v.x * 0.1, v.y * 0.1, v.z * 0.1);
                             }
+                            
+                            // Add sparkle effects every few particles
+                            if (t % 3 == 0 && r.nextFloat() < 0.5f) {
+                                level.addParticle(ParticleTypes.END_ROD, p.x, p.y, p.z, 
+                                        v.x * 0.08, v.y * 0.08, v.z * 0.08);
+                            }
                             // Add occasional firework particles for extra pop
-                            if (t == trailLength - 1 && r.nextFloat() < 0.3f) {
+                            if (t == trailLength - 1 && r.nextFloat() < 0.4f) {
                                 level.addParticle(ParticleTypes.FIREWORK, p.x, p.y, p.z, 
-                                        v.x * 0.3, v.y * 0.3, v.z * 0.3);
+                                        v.x * 0.25, v.y * 0.25, v.z * 0.25);
                             }
                         }
                     }
                     case "disc" -> {
-                        // Enhanced disc with multiple particle layers
-                        level.addParticle(new DustParticleOptions(color, size),
+                        // Enhanced disc with multiple particle layers - make it more colorful
+                        float discSize = size * 1.3f; // Larger for visibility
+                        level.addParticle(new DustParticleOptions(color, discSize),
                                 origin.x, origin.y, origin.z, v.x, v.y * 0.5, v.z);
+                        // Add a second layer with a different color for depth
+                        if (r.nextFloat() < 0.6f) {
+                            Vector3f altColor = w.colors.get(r.nextInt(w.colors.size()));
+                            level.addParticle(new DustParticleOptions(altColor, discSize * 0.7f),
+                                    origin.x + (r.nextDouble() - 0.5) * 0.15, 
+                                    origin.y + (r.nextDouble() - 0.5) * 0.15, 
+                                    origin.z + (r.nextDouble() - 0.5) * 0.15,
+                                    v.x * 0.8, v.y * 0.4, v.z * 0.8);
+                        }
                         // Add sparkle accent
-                        if (r.nextFloat() < 0.3f) {
+                        if (r.nextFloat() < 0.4f) {
                             level.addParticle(ParticleTypes.END_ROD, origin.x, origin.y, origin.z, 
-                                    v.x * 0.15, v.y * 0.15, v.z * 0.15);
+                                    v.x * 0.12, v.y * 0.12, v.z * 0.12);
                         }
                     }
                     case "triangle", "rect" -> {
-                        // Enhanced shapes with more visual variety
+                        // Enhanced shapes with more visual variety and color
                         double damp = shape.equals("triangle") ? 0.65 : 0.8;
-                        level.addParticle(new DustParticleOptions(color, size),
+                        float shapeSize = size * 1.2f; // Larger for visibility
+                        level.addParticle(new DustParticleOptions(color, shapeSize),
                                 origin.x, origin.y, origin.z, v.x * damp, v.y * damp, v.z * damp);
+                        // Add a second particle with different color for variety
+                        if (r.nextFloat() < 0.5f) {
+                            Vector3f altColor = w.colors.get(r.nextInt(w.colors.size()));
+                            level.addParticle(new DustParticleOptions(altColor, shapeSize * 0.75f),
+                                    origin.x + (r.nextDouble() - 0.5) * 0.12, 
+                                    origin.y + (r.nextDouble() - 0.5) * 0.12, 
+                                    origin.z + (r.nextDouble() - 0.5) * 0.12,
+                                    v.x * damp * 0.9, v.y * damp * 0.9, v.z * damp * 0.9);
+                        }
                         // Add occasional firework burst
-                        if (r.nextFloat() < 0.25f) {
+                        if (r.nextFloat() < 0.3f) {
                             level.addParticle(ParticleTypes.FIREWORK, origin.x, origin.y, origin.z, 
-                                    v.x * 0.4, v.y * 0.4, v.z * 0.4);
+                                    v.x * 0.35, v.y * 0.35, v.z * 0.35);
                         }
                     }
                     default -> {
-                        // Default with enhanced visuals
-                        level.addParticle(new DustParticleOptions(color, size),
+                        // Default with enhanced visuals and color
+                        float defaultSize = size * 1.2f; // Larger for visibility
+                        level.addParticle(new DustParticleOptions(color, defaultSize),
                                 origin.x, origin.y, origin.z, v.x, v.y, v.z);
-                        if (r.nextFloat() < 0.2f) {
+                        // Add a second colored particle for density
+                        if (r.nextFloat() < 0.4f) {
+                            Vector3f altColor = w.colors.get(r.nextInt(w.colors.size()));
+                            level.addParticle(new DustParticleOptions(altColor, defaultSize * 0.8f),
+                                    origin.x + (r.nextDouble() - 0.5) * 0.1, 
+                                    origin.y + (r.nextDouble() - 0.5) * 0.1, 
+                                    origin.z + (r.nextDouble() - 0.5) * 0.1,
+                                    v.x * 0.9, v.y * 0.9, v.z * 0.9);
+                        }
+                        if (r.nextFloat() < 0.25f) {
                             level.addParticle(ParticleTypes.END_ROD, origin.x, origin.y, origin.z, 
-                                    v.x * 0.2, v.y * 0.2, v.z * 0.2);
+                                    v.x * 0.15, v.y * 0.15, v.z * 0.15);
                         }
                     }
                 }

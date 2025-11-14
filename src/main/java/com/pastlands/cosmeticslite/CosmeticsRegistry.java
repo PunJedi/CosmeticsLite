@@ -732,6 +732,19 @@ public final class CosmeticsRegistry {
             ),
             "base"
         ));
+        registerUnlocked(new CosmeticDef(
+            rl("cosmeticslite","confetti_cyclone"), "Confetti Cyclone","Tornado of colorful confetti.",
+            TYPE_GADGETS, BuiltInRegistries.ITEM.getKey(Items.FIREWORK_ROCKET),
+            Map.ofEntries(
+                Map.entry("pattern","confetti_cyclone"),
+                Map.entry("count","500"),
+                Map.entry("height","7.0"),
+                Map.entry("radius","2.8"),
+                Map.entry("duration_ms", ms.apply(4000L)),
+                Map.entry("menu_pad_ms", "500")
+            ),
+            "base"
+        ));
         // Cinematic IDs below are hardwired in GadgetNet; keep only durations
         registerUnlocked(new CosmeticDef(
             rl("cosmeticslite","supernova_burst"), "Supernova Burst","Massive starburst of radiant energy.",

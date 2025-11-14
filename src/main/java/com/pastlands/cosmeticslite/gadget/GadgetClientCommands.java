@@ -96,6 +96,8 @@ public final class GadgetClientCommands {
                 new Pretty("Ground Ripple", "A low shock ring that rolls along the ground."));
         PRETTY.put("cosmeticslite:sky_beacon",
                 new Pretty("Sky Beacon", "A column of light that marks the sky."));
+        PRETTY.put("cosmeticslite:confetti_cyclone",
+                new Pretty("Confetti Cyclone", "A spectacular tornado of colorful confetti."));
     }
 
     public static String displayName(ResourceLocation id) {

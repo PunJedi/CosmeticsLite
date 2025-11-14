@@ -178,6 +178,7 @@ private static boolean canAutoReturn() {
     // ---- Widgets ----
     private Button leftBtn, rightBtn;
     private Button equipBtn, unequipBtn, clearBtn;
+    private Button miniGamesBtn;
 
     // PETS extras
     private Button randomBtn;
@@ -396,6 +397,16 @@ private static boolean canAutoReturn() {
         clearBtn = addRenderableWidget(
                 Button.builder(Component.literal("Clear Equipped"), b -> onClearEquipped())
                         .pos(baseX + (btnW + gap) * 2, baseY).size(btnW, btnH).build());
+        
+        // Mini Games button - directly above Equip button
+        miniGamesBtn = addRenderableWidget(
+                Button.builder(Component.translatable("cosmeticslite.minigame.button"), 
+                        b -> {
+                            if (minecraft != null) {
+                                minecraft.setScreen(new com.pastlands.cosmeticslite.minigame.client.MiniGameHubScreen(this));
+                            }
+                        })
+                        .pos(baseX, baseY - btnH - 4).size(btnW, btnH).build());
     }
 
     // ========================================================================
