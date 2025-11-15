@@ -1,7 +1,6 @@
 // src/main/java/com/pastlands/cosmeticslite/ModLifecycle.java
 package com.pastlands.cosmeticslite;
 
-import com.pastlands.cosmeticslite.gadget.GadgetNet;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
 import net.minecraftforge.fml.common.Mod;
 import net.minecraftforge.fml.event.lifecycle.FMLCommonSetupEvent;
@@ -12,6 +11,6 @@ public final class ModLifecycle {
 
     @SubscribeEvent
     public static void onCommonSetup(final FMLCommonSetupEvent event) {
-        event.enqueueWork(GadgetNet::init);
+        // Common setup tasks (if any)
     }
 }

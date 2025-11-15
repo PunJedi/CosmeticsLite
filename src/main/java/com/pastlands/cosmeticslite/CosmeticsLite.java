@@ -3,7 +3,6 @@ package com.pastlands.cosmeticslite;
 
 import com.mojang.logging.LogUtils;
 import com.pastlands.cosmeticslite.entity.PetEntities;
-import com.pastlands.cosmeticslite.gadget.GadgetNet;
 import com.pastlands.cosmeticslite.entity.PetManager;
 import com.pastlands.cosmeticslite.network.PacketSetPetColor;
 import com.pastlands.cosmeticslite.network.PacketSetPetVariant;
@@ -82,10 +81,7 @@ public CosmeticsLite() {
 
     registerPackets();
 
-    // ✅ Initialize network first
-    GadgetNet.init();
-
-    // ✅ Ensure registry fully populated before dev gadgets
+    // ✅ Ensure registry fully populated before dev seed
     if (CosmeticsRegistry.all().isEmpty()) {
         LOG.info("[{}] Registry empty at init; installing dev seed.", MODID);
         CosmeticsRegistry.replaceAll(Collections.emptyList(), /*addDevSeed=*/true);
@@ -275,22 +271,5 @@ public CosmeticsLite() {
         com.pastlands.cosmeticslite.client.model.CosmeticsModels.registerLayers(event);
     }
 
-   // --------------------------------------------------------------------------------------------
-// Client setup – ensures GadgetTiming burst scheduler is registered early
-// --------------------------------------------------------------------------------------------
-@Mod.EventBusSubscriber(modid = CosmeticsLite.MODID, bus = Mod.EventBusSubscriber.Bus.MOD, value = net.minecraftforge.api.distmarker.Dist.CLIENT)
-public static final class ClientSetup {
-    @SubscribeEvent
-    public static void onClientSetup(final net.minecraftforge.fml.event.lifecycle.FMLClientSetupEvent event) {
-        event.enqueueWork(() -> {
-            // Force GadgetTiming listener registration
-            com.pastlands.cosmeticslite.gadget.GadgetTiming.ClientBurstScheduler.scheduleBursts(
-                com.pastlands.cosmeticslite.gadget.GadgetTiming.from(java.util.Map.of()),
-                () -> {}
-            );
-            CosmeticsLite.LOGGER.info("[CosmeticsLite] ClientBurstScheduler primed for cinematic gadget FX");
-        });
-    }
-}
 }
 

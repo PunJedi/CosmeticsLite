@@ -21,7 +21,7 @@ import java.util.Optional;
 /**
  * Server-authoritative per-player cosmetic state.
  *
- * Tracks exactly one equipped cosmetic per category (particles / hats / capes / pets / gadgets)
+ * Tracks exactly one equipped cosmetic per category (particles / hats / capes / pets)
  * plus a STYLE payload for each category:
  *   - variant (int, -1 if unused)
  *   - colorARGB (int, -1 if unused)
@@ -34,20 +34,18 @@ import java.util.Optional;
  *     particles: "namespace:path",
  *     hats:      "namespace:path",
  *     capes:     "namespace:path",
- *     pets:      "namespace:path",
- *     gadgets:   "namespace:path"
+ *     pets:      "namespace:path"
  *   },
  *   styles: {
  *     particles: { variant: 3, color: 0xFFAABBCC, extra: { ... } },
  *     hats:      { variant: -1, color: -1 },
  *     capes:     { ... },
- *     pets:      { variant: 2, color: 0xFF112233, extra: { color:1, markings:3 } },
- *     gadgets:   { ... }
+ *     pets:      { variant: 2, color: 0xFF112233, extra: { color:1, markings:3 } }
  *   }
  * }
  *
  * Notes:
- *  - Unknown or invalid RLs are ignored on load.
+ *  - Unknown or invalid RLs are ignored on load (including legacy "gadgets" keys).
  *  - Missing keys default to AIR (unset).
  *  - Style defaults: variant = -1, colorARGB = -1, extra = {}.
  *  - Style is stored per-type, but you can ignore it for categories that don't use it.
@@ -61,7 +59,6 @@ public class PlayerData implements INBTSerializable<CompoundTag> {
     public static final String TYPE_HATS      = "hats";
     public static final String TYPE_CAPES     = "capes";
     public static final String TYPE_PETS      = "pets";
-    public static final String TYPE_GADGETS   = "gadgets";
 
     // Capability id & handle
     public static final ResourceLocation CAP_ID =
@@ -245,11 +242,6 @@ public class PlayerData implements INBTSerializable<CompoundTag> {
     public ResourceLocation getEquippedPetId() { return getEquippedId(TYPE_PETS); }
     public void setEquippedPetId(@Nullable ResourceLocation id) { setEquippedId(TYPE_PETS, id); }
     public void clearPet() { clearEquipped(TYPE_PETS); }
-
-    // Gadgets
-    public ResourceLocation getEquippedGadgetId() { return getEquippedId(TYPE_GADGETS); }
-    public void setEquippedGadgetId(@Nullable ResourceLocation id) { setEquippedId(TYPE_GADGETS, id); }
-    public void clearGadget() { clearEquipped(TYPE_GADGETS); }
 
     // ------------------------------------------------------------------------------------------------
     // INBTSerializable

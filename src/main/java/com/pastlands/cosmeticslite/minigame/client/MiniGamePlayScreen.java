@@ -97,6 +97,16 @@ public class MiniGamePlayScreen extends Screen {
                 // For MarbleTiltGame, use resetAllLevels() to reset score and start from level 1
                 if (game instanceof com.pastlands.cosmeticslite.minigame.impl.tilt.MarbleTiltGame) {
                     ((com.pastlands.cosmeticslite.minigame.impl.tilt.MarbleTiltGame) game).resetAllLevels();
+                } else if (game instanceof MemoryMatchGame) {
+                    // For MemoryMatchGame, use resetLevel() to reshuffle current level
+                    ((MemoryMatchGame) game).resetLevel();
+                } else if (game instanceof com.pastlands.cosmeticslite.minigame.impl.battleship.BattleshipGame) {
+                    // For BattleshipGame, play reset sound and call initGame()
+                    net.minecraft.client.Minecraft mc = net.minecraft.client.Minecraft.getInstance();
+                    if (mc.player != null) {
+                        mc.player.playSound(net.minecraft.sounds.SoundEvents.UI_BUTTON_CLICK.value(), 0.3F, 0.9F);
+                    }
+                    game.initGame();
                 } else {
                     // For other games, just call initGame()
                     game.initGame();
@@ -133,6 +143,8 @@ public class MiniGamePlayScreen extends Screen {
             ((com.pastlands.cosmeticslite.minigame.impl.minesweeper.MinesweeperGame) game).updateMouse(mouseX, mouseY);
         } else if (game instanceof com.pastlands.cosmeticslite.minigame.impl.battleship.BattleshipGame) {
             ((com.pastlands.cosmeticslite.minigame.impl.battleship.BattleshipGame) game).updateMouse(mouseX, mouseY);
+        } else if (game instanceof MemoryMatchGame) {
+            ((MemoryMatchGame) game).updateMouse(mouseX, mouseY);
         }
         game.render(g, font, gameAreaX, gameAreaY, gameAreaWidth, gameAreaHeight, partialTicks);
         
@@ -180,8 +192,10 @@ public class MiniGamePlayScreen extends Screen {
     
     private void drawGameOverOverlay(GuiGraphics g) {
         // Unified overlay centered over game area
+        // RogueGame needs 4 lines, so make it taller
+        boolean isRogueGame = game instanceof com.pastlands.cosmeticslite.minigame.impl.roguelike.RogueGame;
         int overlayWidth = gameAreaWidth / 3;
-        int overlayHeight = 60;
+        int overlayHeight = isRogueGame ? 80 : 60; // Taller for RogueGame (4 lines vs 3)
         int ox = gameAreaX + (gameAreaWidth - overlayWidth) / 2;
         int oy = gameAreaY + (gameAreaHeight - overlayHeight) / 2;
         
@@ -204,18 +218,43 @@ public class MiniGamePlayScreen extends Screen {
         int lineHeight = 14;
         int line = 0;
         
-        // Line 1: End title
-        g.drawString(font, endTitle, centerX - font.width(endTitle) / 2, centerY - lineHeight + lineHeight * line, COL_TEXT_MAIN, true);
-        line++;
-        
-        // Line 2: Score
-        String scoreText = "Score: " + score;
-        g.drawString(font, Component.literal(scoreText), centerX - font.width(scoreText) / 2, centerY - lineHeight + lineHeight * line, COL_TEXT_MAIN, true);
-        line++;
-        
-        // Line 3: Reset hint
-        Component resetHint = Component.translatable("cosmeticslite.minigame.generic.press_reset");
-        g.drawString(font, resetHint, centerX - font.width(resetHint) / 2, centerY - lineHeight + lineHeight * line, COL_TEXT_MAIN, true);
+        // Special handling for RogueGame - show Depth and Gold
+        if (game instanceof com.pastlands.cosmeticslite.minigame.impl.roguelike.RogueGame) {
+            com.pastlands.cosmeticslite.minigame.impl.roguelike.RogueGame rogueGame = 
+                (com.pastlands.cosmeticslite.minigame.impl.roguelike.RogueGame) game;
+            
+            // Line 1: Result (You died! / You win!)
+            g.drawString(font, endTitle, centerX - font.width(endTitle) / 2, centerY - lineHeight + lineHeight * line, COL_TEXT_MAIN, true);
+            line++;
+            
+            // Line 2: Depth
+            String depthText = "Depth: " + rogueGame.getDepth();
+            g.drawString(font, Component.literal(depthText), centerX - font.width(depthText) / 2, centerY - lineHeight + lineHeight * line, COL_TEXT_MAIN, true);
+            line++;
+            
+            // Line 3: Gold
+            String goldText = "Gold: " + score;
+            g.drawString(font, Component.literal(goldText), centerX - font.width(goldText) / 2, centerY - lineHeight + lineHeight * line, COL_TEXT_MAIN, true);
+            line++;
+            
+            // Line 4: Reset hint
+            Component resetHint = Component.translatable("cosmeticslite.minigame.generic.press_reset");
+            g.drawString(font, resetHint, centerX - font.width(resetHint) / 2, centerY - lineHeight + lineHeight * line, COL_TEXT_MAIN, true);
+        } else {
+            // Standard format for other games
+            // Line 1: End title
+            g.drawString(font, endTitle, centerX - font.width(endTitle) / 2, centerY - lineHeight + lineHeight * line, COL_TEXT_MAIN, true);
+            line++;
+            
+            // Line 2: Score
+            String scoreText = "Score: " + score;
+            g.drawString(font, Component.literal(scoreText), centerX - font.width(scoreText) / 2, centerY - lineHeight + lineHeight * line, COL_TEXT_MAIN, true);
+            line++;
+            
+            // Line 3: Reset hint
+            Component resetHint = Component.translatable("cosmeticslite.minigame.generic.press_reset");
+            g.drawString(font, resetHint, centerX - font.width(resetHint) / 2, centerY - lineHeight + lineHeight * line, COL_TEXT_MAIN, true);
+        }
     }
     
     private Component getEndTitle() {
@@ -237,6 +276,7 @@ public class MiniGamePlayScreen extends Screen {
             // This is a simplification - ideally CentipedeGame would expose playerWon
             return Component.translatable("cosmeticslite.minigame.you_win");
         } else if (game instanceof RogueGame) {
+            // RogueGame always shows "You died!" (no win condition implemented)
             return Component.literal("You died!");
         } else {
             return Component.translatable("cosmeticslite.minigame.game_over");

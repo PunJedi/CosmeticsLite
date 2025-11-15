@@ -1,9 +1,12 @@
 package com.pastlands.cosmeticslite.minigame.impl.roguelike;
 
 import com.pastlands.cosmeticslite.minigame.api.MiniGame;
+import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.Font;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.network.chat.Component;
+import net.minecraft.sounds.SoundEvent;
+import net.minecraft.sounds.SoundEvents;
 
 import java.util.*;
 
@@ -20,13 +23,24 @@ public class RogueGame implements MiniGame {
     private static final int MIN_REACHABLE_TILES = 40;
     
     // Color constants
-    private static final int COL_WALL   = 0xFF252525; // Slightly lighter than floor
-    private static final int COL_FLOOR  = 0xFF101010; // Very dark gray
+    private static final int COL_BACKGROUND = 0xFF20222A; // Dark CosmeticsLite slate
+    private static final int COL_WALL   = 0xFF0A0A0A; // Almost-black with faint grid
+    private static final int COL_FLOOR  = 0xFF2A2A32; // Slightly lighter charcoal
     private static final int COL_PLAYER = 0xFF00FFFF; // Cyan
     private static final int COL_MONSTER = 0xFFFF4040; // Red
     private static final int COL_LOOT   = 0xFFFFD840; // Yellow (gold)
     private static final int COL_EXIT   = 0xFF40FF40; // Green
+    private static final int COL_EXIT_RING = 0xFF80FF80; // Brighter green for ring/halo
     private static final int COL_TEXT_MAIN = 0xFFFFFFFF; // White with shadow (matches MiniGamePlayScreen)
+    
+    // Flash effect timers
+    private int lastPlayerX = -1, lastPlayerY = -1;
+    private int moveFlashTicks = 0; // Shadow step effect
+    private static final int MOVE_FLASH_DURATION = 2; // ~100ms at 20 TPS
+    private int damageFlashTicks = 0; // Damage flash effect
+    private static final int DAMAGE_FLASH_DURATION = 3; // ~150ms at 20 TPS
+    private boolean tookDamageThisTurn = false; // Track if player took damage this turn
+    private boolean killedMonsterThisTurn = false; // Track if player killed a monster this turn
     
     private enum TileType {
         WALL,
@@ -128,6 +142,14 @@ public class RogueGame implements MiniGame {
         playerY = 0;
         upgradeMessage = "";
         upgradeMessageTicks = 0;
+        
+        // Clear flash states
+        lastPlayerX = -1;
+        lastPlayerY = -1;
+        moveFlashTicks = 0;
+        damageFlashTicks = 0;
+        tookDamageThisTurn = false;
+        killedMonsterThisTurn = false;
         
         // Initialize random and data structures
         random = new Random();
@@ -475,12 +497,20 @@ public class RogueGame implements MiniGame {
     
     @Override
     public void tick() {
-        // Turn-based, but update upgrade message timer every tick
+        // Turn-based, but update timers every tick
         if (upgradeMessageTicks > 0) {
             upgradeMessageTicks--;
             if (upgradeMessageTicks == 0) {
                 upgradeMessage = "";
             }
+        }
+        
+        // Update flash effects
+        if (moveFlashTicks > 0) {
+            moveFlashTicks--;
+        }
+        if (damageFlashTicks > 0) {
+            damageFlashTicks--;
         }
     }
     
@@ -508,6 +538,8 @@ public class RogueGame implements MiniGame {
             dy = -1;
         } else if (keyCode == 32 || keyCode == 46) { // SPACE or PERIOD (wait)
             wait = true;
+            // Play wait sound (softer tick)
+            playLocalSound(SoundEvents.UI_BUTTON_CLICK.value(), 0.15F, 1.0F);
         } else {
             return; // Invalid key, no turn passes
         }
@@ -543,19 +575,29 @@ public class RogueGame implements MiniGame {
                 
                 if (targetMonster.hp <= 0) {
                     targetMonster.alive = false;
+                    killedMonsterThisTurn = true;
                 }
                 actionTaken = true;
             } else {
-                // Move player
+                // Move player - track previous position for shadow step effect
+                lastPlayerX = playerX;
+                lastPlayerY = playerY;
+                moveFlashTicks = MOVE_FLASH_DURATION;
+                
                 playerX = tx;
                 playerY = ty;
                 actionTaken = true;
+                
+                // Play move sound (only when actually moving to a new tile)
+                playLocalSound(SoundEvents.STONE_STEP, 0.3F, 1.2F);
                 
                 // Check for loot
                 for (Loot l : loot) {
                     if (!l.collected && l.x == playerX && l.y == playerY) {
                         playerGold += l.amount;
                         l.collected = true;
+                        // Play gold pickup sound
+                        playLocalSound(SoundEvents.EXPERIENCE_ORB_PICKUP, 0.4F, 1.5F); // Short, bright coin chime
                         // Check for upgrades after gold pickup
                         maybeGrantUpgrade();
                         break;
@@ -564,6 +606,9 @@ public class RogueGame implements MiniGame {
                 
                 // Check for exit - advance to next level
                 if (tiles[playerY][playerX] == TileType.EXIT) {
+                    // Play exit/descend sound
+                    playLocalSound(SoundEvents.AMETHYST_BLOCK_CHIME, 0.5F, 1.3F); // Small celebratory chime
+                    
                     // Increase dungeon depth
                     depth++;
                     
@@ -583,11 +628,25 @@ public class RogueGame implements MiniGame {
             // Monster turn
             if (!gameOver) {
                 processMonsterTurn();
+                
+                // Play sounds after monster turn
+                if (tookDamageThisTurn) {
+                    // Play hit sound (once per turn, aggregated)
+                    damageFlashTicks = DAMAGE_FLASH_DURATION;
+                    playLocalSound(SoundEvents.ANVIL_LAND, 0.3F, 0.7F); // Low, muted thud/hit
+                }
+                if (killedMonsterThisTurn) {
+                    // Play kill sound
+                    playLocalSound(SoundEvents.NOTE_BLOCK_PLING.value(), 0.3F, 1.8F); // Small pop/crunch
+                }
             }
         }
     }
     
     private void processMonsterTurn() {
+        tookDamageThisTurn = false; // Reset damage flag
+        killedMonsterThisTurn = false; // Reset kill flag
+        
         for (Monster monster : monsters) {
             if (!monster.alive) continue;
             
@@ -601,11 +660,14 @@ public class RogueGame implements MiniGame {
                 int rawDamage = monster.attack;
                 int reduced = Math.max(1, rawDamage - playerArmor);
                 playerHp -= reduced;
+                tookDamageThisTurn = true; // Mark that player took damage
                 
                 if (playerHp <= 0) {
                     playerHp = 0;
                     gameOver = true;
                     playerWon = false;
+                    // Play game over sound
+                    playLocalSound(SoundEvents.NOTE_BLOCK_BASS.value(), 0.5F, 0.5F); // Short "fail" sting
                     return;
                 }
             } else if (manhattanDist > 1) {
@@ -661,6 +723,9 @@ public class RogueGame implements MiniGame {
         int cellWidth = areaWidth / GRID_WIDTH;
         int cellHeight = areaHeight / GRID_HEIGHT;
         
+        // Draw background
+        g.fill(areaX, areaY, areaX + areaWidth, areaY + areaHeight, COL_BACKGROUND);
+        
         // Draw dungeon grid with fog of war lighting
         for (int y = 0; y < GRID_HEIGHT; y++) {
             for (int x = 0; x < GRID_WIDTH; x++) {
@@ -675,59 +740,120 @@ public class RogueGame implements MiniGame {
                 int tileColor;
                 if (tiles[y][x] == TileType.WALL) {
                     tileColor = COL_WALL;
+                    // Draw faint grid lines on walls
+                    if (x % 2 == 0 || y % 2 == 0) {
+                        int gridColor = 0x10000000; // Very faint
+                        if (x % 2 == 0) {
+                            g.fill(px, py, px + 1, py + cellHeight, gridColor);
+                        }
+                        if (y % 2 == 0) {
+                            g.fill(px, py, px + cellWidth, py + 1, gridColor);
+                        }
+                    }
                 } else if (tiles[y][x] == TileType.EXIT) {
                     tileColor = COL_FLOOR; // Exit uses floor color as base
                 } else {
                     tileColor = COL_FLOOR;
+                    // Draw floor tile with softened edges (slight inset)
+                    int floorColor = applyBrightness(tileColor, brightness);
+                    g.fill(px + 1, py + 1, px + cellWidth - 1, py + cellHeight - 1, floorColor);
                 }
                 
-                g.fill(px, py, px + cellWidth, py + cellHeight, applyBrightness(tileColor, brightness));
+                if (tiles[y][x] == TileType.WALL) {
+                    g.fill(px, py, px + cellWidth, py + cellHeight, applyBrightness(tileColor, brightness));
+                }
                 
-                // Draw exit highlight with brightness
+                // Draw exit with ring/halo border
                 if (tiles[y][x] == TileType.EXIT) {
-                    g.fill(px + 1, py + 1, px + cellWidth - 1, py + cellHeight - 1, applyBrightness(COL_EXIT, brightness));
+                    int exitBrightness = applyBrightness(COL_EXIT, brightness);
+                    int ringBrightness = applyBrightness(COL_EXIT_RING, brightness);
+                    // Outer ring/halo (brighter green border)
+                    g.fill(px, py, px + cellWidth, py + 1, ringBrightness);
+                    g.fill(px, py + cellHeight - 1, px + cellWidth, py + cellHeight, ringBrightness);
+                    g.fill(px, py, px + 1, py + cellHeight, ringBrightness);
+                    g.fill(px + cellWidth - 1, py, px + cellWidth, py + cellHeight, ringBrightness);
+                    // Inner portal tile
+                    g.fill(px + 1, py + 1, px + cellWidth - 1, py + cellHeight - 1, exitBrightness);
                 }
             }
         }
         
-        // Draw loot with brightness
+        // Draw shadow step effect (previous tile flash)
+        if (moveFlashTicks > 0 && lastPlayerX >= 0 && lastPlayerY >= 0) {
+            int px = areaX + lastPlayerX * cellWidth;
+            int py = areaY + lastPlayerY * cellHeight;
+            float alpha = moveFlashTicks / (float)MOVE_FLASH_DURATION;
+            int shadowColor = ((int)(alpha * 0x40) << 24) | 0x000000; // Darker overlay
+            g.fill(px + 1, py + 1, px + cellWidth - 1, py + cellHeight - 1, shadowColor);
+        }
+        
+        // Draw loot (two-tone coin: darker base with lighter diagonal highlight)
         for (Loot l : loot) {
             if (!l.collected) {
                 int px = areaX + l.x * cellWidth;
                 int py = areaY + l.y * cellHeight;
                 int manhattanDist = Math.abs(l.x - playerX) + Math.abs(l.y - playerY);
                 float brightness = Math.max(0.3f, Math.min(1.0f, 1.0f - 0.08f * manhattanDist));
-                g.fill(px + 1, py + 1, px + cellWidth - 1, py + cellHeight - 1, applyBrightness(COL_LOOT, brightness));
+                
+                // Base coin color (darker yellow)
+                int baseColor = applyBrightness(0xFFFFB800, brightness); // Darker yellow
+                g.fill(px + 1, py + 1, px + cellWidth - 1, py + cellHeight - 1, baseColor);
+                
+                // Diagonal highlight band (lighter yellow, top-left to bottom-right)
+                int highlightColor = applyBrightness(COL_LOOT, brightness);
+                int highlightWidth = cellWidth / 2;
+                // Draw diagonal band
+                for (int i = 0; i < highlightWidth; i++) {
+                    int offsetX = px + 1 + i;
+                    int offsetY = py + 1 + (i * cellHeight / cellWidth);
+                    if (offsetX < px + cellWidth - 1 && offsetY < py + cellHeight - 1) {
+                        g.fill(offsetX, offsetY, offsetX + 1, offsetY + 1, highlightColor);
+                    }
+                }
             }
         }
         
-        // Draw monsters with brightness
+        // Draw monsters (red with outline or inner darker core - "angry cores")
         for (Monster monster : monsters) {
             if (monster.alive) {
                 int px = areaX + monster.x * cellWidth;
                 int py = areaY + monster.y * cellHeight;
                 int manhattanDist = Math.abs(monster.x - playerX) + Math.abs(monster.y - playerY);
                 float brightness = Math.max(0.3f, Math.min(1.0f, 1.0f - 0.08f * manhattanDist));
-                g.fill(px + 1, py + 1, px + cellWidth - 1, py + cellHeight - 1, applyBrightness(COL_MONSTER, brightness));
+                
+                // Outer red square
+                int outerColor = applyBrightness(COL_MONSTER, brightness);
+                g.fill(px + 1, py + 1, px + cellWidth - 1, py + cellHeight - 1, outerColor);
+                
+                // Inner darker core (smaller, darker red)
+                int innerColor = applyBrightness(0xFFCC0000, brightness); // Darker red
+                int innerPad = 2;
+                g.fill(px + innerPad, py + innerPad, px + cellWidth - innerPad, py + cellHeight - innerPad, innerColor);
             }
         }
         
-        // Draw player with bright contrasting outline
+        // Draw player (cyan/teal square with subtle crosshair/inner border)
         int playerPx = areaX + playerX * cellWidth;
         int playerPy = areaY + playerY * cellHeight;
-        g.fill(playerPx + 1, playerPy + 1, playerPx + cellWidth - 1, playerPy + cellHeight - 1, COL_PLAYER);
         
-        // Bright contrasting outline box (1-2px) around player tile
-        int outlineThickness = 2;
-        int outlineColor = 0xFFFFFF00; // Bright yellow for high contrast
-        // Top
-        g.fill(playerPx, playerPy, playerPx + cellWidth, playerPy + outlineThickness, outlineColor);
-        // Bottom
-        g.fill(playerPx, playerPy + cellHeight - outlineThickness, playerPx + cellWidth, playerPy + cellHeight, outlineColor);
-        // Left
-        g.fill(playerPx, playerPy, playerPx + outlineThickness, playerPy + cellHeight, outlineColor);
-        // Right
-        g.fill(playerPx + cellWidth - outlineThickness, playerPy, playerPx + cellWidth, playerPy + cellHeight, outlineColor);
+        // Apply damage flash if hit
+        int playerColor = COL_PLAYER;
+        if (damageFlashTicks > 0) {
+            // Red tint overlay
+            float flashAlpha = damageFlashTicks / (float)DAMAGE_FLASH_DURATION;
+            int flashColor = ((int)(flashAlpha * 0x60) << 24) | 0x00FF0000; // Red tint
+            g.fill(playerPx + 1, playerPy + 1, playerPx + cellWidth - 1, playerPy + cellHeight - 1, flashColor);
+        }
+        
+        // Base cyan square
+        g.fill(playerPx + 1, playerPy + 1, playerPx + cellWidth - 1, playerPy + cellHeight - 1, playerColor);
+        
+        // Subtle crosshair/inner border (small lighter center square)
+        int crosshairSize = Math.max(2, cellWidth / 3);
+        int crosshairX = playerPx + (cellWidth - crosshairSize) / 2;
+        int crosshairY = playerPy + (cellHeight - crosshairSize) / 2;
+        int crosshairColor = 0xFF88FFFF; // Lighter cyan
+        g.fill(crosshairX, crosshairY, crosshairX + crosshairSize, crosshairY + crosshairSize, crosshairColor);
         
         // Draw HUD (top-left and top-right inside game area)
         // Top-left: HP and Gold using COL_TEXT_MAIN
@@ -762,10 +888,12 @@ public class RogueGame implements MiniGame {
             g.drawString(font, Component.literal("Move: Arrows/WASD, Space: wait"), legendX, legendY + lineHeight * 2, COL_TEXT_MAIN, true);
         }
         
-        // Draw upgrade message if present (only while timer is active)
+        // Draw upgrade message (center-top toast, white with shadow)
         if (upgradeMessageTicks > 0 && !upgradeMessage.isEmpty()) {
-            int messageY = areaY + 32; // Below HUD
-            g.drawString(font, Component.literal(upgradeMessage), areaX + 4, messageY, 0xFFFFFF00, true); // Yellow
+            int centerX = areaX + areaWidth / 2;
+            int messageY = areaY + 32; // Center-top
+            int textWidth = font.width(upgradeMessage);
+            g.drawString(font, Component.literal(upgradeMessage), centerX - textWidth / 2, messageY, COL_TEXT_MAIN, true);
         }
         
         // Game over overlay is handled by MiniGamePlayScreen
@@ -808,11 +936,21 @@ public class RogueGame implements MiniGame {
     }
     
     /**
-     * Show an upgrade message for ~2 seconds.
+     * Show an upgrade message for ~2 seconds minimum.
      */
     private void showUpgradeMessage(String message) {
         this.upgradeMessage = message;
-        this.upgradeMessageTicks = 40; // ~2 seconds at 20 ticks per second
+        this.upgradeMessageTicks = 40; // ~2 seconds at 20 ticks per second (minimum)
+    }
+    
+    /**
+     * Play a sound effect locally (client-side only).
+     */
+    private void playLocalSound(SoundEvent event, float volume, float pitch) {
+        Minecraft mc = Minecraft.getInstance();
+        if (mc.player != null) {
+            mc.player.playSound(event, volume, pitch);
+        }
     }
     
     @Override
@@ -828,6 +966,13 @@ public class RogueGame implements MiniGame {
     @Override
     public int getScore() {
         return playerGold;
+    }
+    
+    /**
+     * Get the current dungeon depth (for display in game over overlay).
+     */
+    public int getDepth() {
+        return depth;
     }
     
     @Override

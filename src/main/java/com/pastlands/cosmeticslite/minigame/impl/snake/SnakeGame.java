@@ -1,7 +1,11 @@
 package com.pastlands.cosmeticslite.minigame.impl.snake;
 
 import com.pastlands.cosmeticslite.minigame.api.MiniGame;
+import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
+import net.minecraft.network.chat.Component;
+import net.minecraft.sounds.SoundEvent;
+import net.minecraft.sounds.SoundEvents;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -24,10 +28,16 @@ public class SnakeGame implements MiniGame {
     private Random random;
     private int initialLength;
     
+    // Best score tracking (per session)
+    private int bestScoreSnake = 0;
+    
     // Visual-only animation fields
     private float foodPulse = 0.0f;
     private float lastHeadX, lastHeadY;
     private float renderHeadX, renderHeadY;
+    private int deathFlashTicks = 0; // Death flash animation
+    private int foodPopTicks = 0; // Food pop animation (0-6)
+    private int moveCount = 0; // Track moves for subtle sound
     
     private enum Direction {
         UP, DOWN, LEFT, RIGHT
@@ -61,6 +71,9 @@ public class SnakeGame implements MiniGame {
         direction = Direction.RIGHT;
         gameOver = false;
         foodPulse = 0.0f;
+        deathFlashTicks = 0;
+        foodPopTicks = 0;
+        moveCount = 0;
         
         // Initialize snake in center with length 3
         snakeBody = new ArrayList<>();
@@ -86,20 +99,27 @@ public class SnakeGame implements MiniGame {
         do {
             food = new Point(random.nextInt(GRID_WIDTH), random.nextInt(GRID_HEIGHT));
         } while (snakeBody.contains(food));
+        // Start pop animation when food spawns
+        foodPopTicks = 6;
     }
     
     @Override
     public void tick() {
+        // Update animations
+        foodPulse += 0.05f;
+        if (deathFlashTicks > 0) {
+            deathFlashTicks--;
+        }
+        if (foodPopTicks > 0) {
+            foodPopTicks--;
+        }
+        
         if (gameOver) {
             // Continue animation even when game over
-            foodPulse += 0.05f;
             return;
         }
         
         tickCounter++;
-        
-        // Update food pulse animation
-        foodPulse += 0.05f;
         
         if (tickCounter < TICK_INTERVAL) return;
         tickCounter = 0;
@@ -124,6 +144,10 @@ public class SnakeGame implements MiniGame {
         if (newHead.x < 0 || newHead.x >= GRID_WIDTH ||
             newHead.y < 0 || newHead.y >= GRID_HEIGHT) {
             gameOver = true;
+            deathFlashTicks = 4;
+            playLocalSound(SoundEvents.PLAYER_HURT, 0.7F, 0.8F);
+            playLocalSound(SoundEvents.NOTE_BLOCK_BASS.value(), 0.4F, 0.6F);
+            updateBestScore();
             return;
         }
         
@@ -131,16 +155,30 @@ public class SnakeGame implements MiniGame {
         for (Point segment : snakeBody) {
             if (newHead.equals(segment)) {
                 gameOver = true;
+                deathFlashTicks = 4;
+                playLocalSound(SoundEvents.PLAYER_HURT, 0.7F, 0.8F);
+                playLocalSound(SoundEvents.NOTE_BLOCK_BASS.value(), 0.4F, 0.6F);
+                updateBestScore();
                 return;
             }
         }
         
         // Add new head
         snakeBody.add(0, newHead);
+        moveCount++;
+        
+        // Optional: subtle movement sound every 4 moves
+        if (moveCount % 4 == 0) {
+            playLocalSound(SoundEvents.NOTE_BLOCK_HAT.value(), 0.2F, 1.8F);
+        }
         
         // Check if food eaten
         if (newHead.equals(food)) {
             spawnFood();
+            // Food eaten sound with slight pitch variation
+            float pitch = 1.1F + (random.nextFloat() * 0.2F - 0.1F); // 1.0-1.2
+            playLocalSound(SoundEvents.EXPERIENCE_ORB_PICKUP, 0.6F, pitch);
+            updateBestScore();
         } else {
             // Remove tail
             snakeBody.remove(snakeBody.size() - 1);
@@ -187,6 +225,10 @@ public class SnakeGame implements MiniGame {
         int cellSize = Math.min(areaWidth / GRID_WIDTH, areaHeight / GRID_HEIGHT);
         int gridOffsetX = areaX + (areaWidth - cellSize * GRID_WIDTH) / 2;
         int gridOffsetY = areaY + (areaHeight - cellSize * GRID_HEIGHT) / 2;
+        int boardLeft = gridOffsetX;
+        int boardTop = gridOffsetY;
+        int boardRight = gridOffsetX + GRID_WIDTH * cellSize;
+        int boardBottom = gridOffsetY + GRID_HEIGHT * cellSize;
         
         // Draw subtle dark checkerboard background
         for (int x = 0; x < GRID_WIDTH; x++) {
@@ -197,6 +239,17 @@ public class SnakeGame implements MiniGame {
                 int color = (x + y) % 2 == 0 ? 0xFF151515 : 0xFF181818;
                 g.fill(px, py, px + cellSize, py + cellSize, color);
             }
+        }
+        
+        // Draw subtle grid lines
+        int gridLine = 0x20101010; // very low alpha
+        for (int x = 0; x <= GRID_WIDTH; x++) {
+            int sx = boardLeft + x * cellSize;
+            g.fill(sx, boardTop, sx + 1, boardBottom, gridLine);
+        }
+        for (int y = 0; y <= GRID_HEIGHT; y++) {
+            int sy = boardTop + y * cellSize;
+            g.fill(boardLeft, sy, boardRight, sy + 1, gridLine);
         }
         
         // Draw border around grid
@@ -210,12 +263,6 @@ public class SnakeGame implements MiniGame {
         g.fill(gridOffsetX + GRID_WIDTH * cellSize, gridOffsetY,
             gridOffsetX + GRID_WIDTH * cellSize + borderThickness, gridOffsetY + GRID_HEIGHT * cellSize, 0xFF000000);
         
-        // Tint grid slightly reddish if game over
-        if (gameOver) {
-            g.fill(gridOffsetX, gridOffsetY, gridOffsetX + GRID_WIDTH * cellSize, 
-                gridOffsetY + GRID_HEIGHT * cellSize, 0x40FF0000);
-        }
-        
         // Update render head position with interpolation
         if (!gameOver && snakeBody.size() > 0) {
             Point head = snakeBody.get(0);
@@ -228,18 +275,25 @@ public class SnakeGame implements MiniGame {
             renderHeadY = lastHeadY + (targetY - lastHeadY) * lerpFactor;
         }
         
+        // Determine if we should draw snake in death flash color
+        boolean drawDeathFlash = deathFlashTicks > 0;
+        int snakeBodyColor = drawDeathFlash ? 0xFFFF4444 : 0xFF2FA94E; // Darker green for body
+        int snakeHeadColor = drawDeathFlash ? 0xFFFF4444 : 0xFF6EE774; // Brighter green for head
+        
         // Draw snake body (all segments except head)
         for (int i = 1; i < snakeBody.size(); i++) {
             Point segment = snakeBody.get(i);
             int px = gridOffsetX + segment.x * cellSize;
             int py = gridOffsetY + segment.y * cellSize;
             
-            // Body with gradient/shadow effect
-            // Base rect
-            g.fill(px + 1, py + 1, px + cellSize - 1, py + cellSize - 1, 0xFF00AA88);
-            // Inner lighter rect for rounded effect
-            int innerPad = 2;
-            g.fill(px + innerPad, py + innerPad, px + cellSize - innerPad, py + cellSize - innerPad, 0xFF22CCAA);
+            // Base body rect
+            g.fill(px + 1, py + 1, px + cellSize - 1, py + cellSize - 1, snakeBodyColor);
+            
+            // Very light inner highlight strip (fake bevel) - only if not death flash
+            if (!drawDeathFlash) {
+                int highlightHeight = 2;
+                g.fill(px + 1, py + 1, px + cellSize - 1, py + 1 + highlightHeight, 0x20FFFFFF);
+            }
         }
         
         // Draw snake head with smooth interpolation
@@ -249,68 +303,63 @@ public class SnakeGame implements MiniGame {
             int headPxInt = (int)headPx;
             int headPyInt = (int)headPy;
             
-            // Head - brighter light green
-            g.fill(headPxInt + 1, headPyInt + 1, headPxInt + cellSize - 1, headPyInt + cellSize - 1, 0xFF44FF44);
-            // Inner highlight
-            g.fill(headPxInt + 2, headPyInt + 2, headPxInt + cellSize - 2, headPyInt + cellSize - 2, 0xFF66FF66);
+            // Head - brighter green
+            g.fill(headPxInt + 1, headPyInt + 1, headPxInt + cellSize - 1, headPyInt + cellSize - 1, snakeHeadColor);
             
-            // Draw eyes on front edge based on direction
-            int eyeSize = 2;
-            int eyeOffset = 3;
-            int eyeY = headPyInt + cellSize / 2 - 1;
-            
-            if (direction == Direction.RIGHT) {
-                // Eyes on right side
-                int eyeX = headPxInt + cellSize - eyeOffset;
-                g.fill(eyeX, eyeY, eyeX + eyeSize, eyeY + 1, 0xFFFFFFFF);
-                g.fill(eyeX, eyeY + 2, eyeX + eyeSize, eyeY + 3, 0xFFFFFFFF);
-            } else if (direction == Direction.LEFT) {
-                // Eyes on left side
-                int eyeX = headPxInt + eyeOffset - eyeSize;
-                g.fill(eyeX, eyeY, eyeX + eyeSize, eyeY + 1, 0xFFFFFFFF);
-                g.fill(eyeX, eyeY + 2, eyeX + eyeSize, eyeY + 3, 0xFFFFFFFF);
-            } else if (direction == Direction.UP) {
-                // Eyes on top
-                int eyeX = headPxInt + cellSize / 2 - 1;
-                int eyeYPos = headPyInt + eyeOffset - eyeSize;
-                g.fill(eyeX, eyeYPos, eyeX + 1, eyeYPos + eyeSize, 0xFFFFFFFF);
-                g.fill(eyeX + 2, eyeYPos, eyeX + 3, eyeYPos + eyeSize, 0xFFFFFFFF);
-            } else if (direction == Direction.DOWN) {
-                // Eyes on bottom
-                int eyeX = headPxInt + cellSize / 2 - 1;
-                int eyeYPos = headPyInt + cellSize - eyeOffset;
-                g.fill(eyeX, eyeYPos, eyeX + 1, eyeYPos + eyeSize, 0xFFFFFFFF);
-                g.fill(eyeX + 2, eyeYPos, eyeX + 3, eyeYPos + eyeSize, 0xFFFFFFFF);
+            // Draw two tiny eye dots (only if not death flash)
+            if (!drawDeathFlash) {
+                g.fill(headPxInt + 3, headPyInt + 3, headPxInt + 5, headPyInt + 5, 0xFF000000);
+                g.fill(headPxInt + cellSize - 5, headPyInt + 3, headPxInt + cellSize - 3, headPyInt + 5, 0xFF000000);
             }
         }
         
-        // Draw pulsating food orb
+        // Draw apple/food
         if (food != null) {
             int px = gridOffsetX + food.x * cellSize;
             int py = gridOffsetY + food.y * cellSize;
             int centerX = px + cellSize / 2;
             int centerY = py + cellSize / 2;
             
-            // Calculate pulse factor (0.5 to 1.0)
-            float pulseFactor = 0.5f + 0.5f * (float)Math.sin(foodPulse);
-            int baseRadius = cellSize / 3;
-            int pulseRadius = (int)(baseRadius * pulseFactor);
+            // Calculate pop animation scale (1.2 → 1.0)
+            float popScale = foodPopTicks > 0 ? 1.0f + (foodPopTicks / 6.0f) * 0.2f : 1.0f;
+            // Calculate pop animation alpha (255 → 200)
+            int popAlpha = foodPopTicks > 0 ? 200 + (foodPopTicks * 55 / 6) : 255;
             
-            // Base food color (yellow/orange)
-            int baseColor = 0xFFFFAA00;
-            int highlightColor = 0xFFFFDD44;
+            int baseRadius = (int)((cellSize / 3) * popScale);
             
-            // Draw outer circle
+            // Base red circle for apple
+            int baseColor = (popAlpha << 24) | 0xE53935; // Red with alpha
+            int highlightColor = (popAlpha << 24) | 0xFFFFFF; // White highlight
+            
+            // Draw apple circle
             for (int dy = -baseRadius; dy <= baseRadius; dy++) {
                 for (int dx = -baseRadius; dx <= baseRadius; dx++) {
                     int distSq = dx * dx + dy * dy;
                     if (distSq <= baseRadius * baseRadius) {
-                        int color = distSq <= pulseRadius * pulseRadius ? highlightColor : baseColor;
-                        g.fill(centerX + dx, centerY + dy, centerX + dx + 1, centerY + dy + 1, color);
+                        g.fill(centerX + dx, centerY + dy, centerX + dx + 1, centerY + dy + 1, baseColor);
                     }
                 }
             }
+            
+            // Tiny white highlight dot on upper left
+            int highlightX = centerX - baseRadius / 3;
+            int highlightY = centerY - baseRadius / 3;
+            g.fill(highlightX, highlightY, highlightX + 2, highlightY + 2, highlightColor);
+            
+            // Tiny brown stem at top
+            int stemX = centerX;
+            int stemY = centerY - baseRadius;
+            g.fill(stemX - 1, stemY, stemX + 1, stemY + 2, (popAlpha << 24) | 0x8B4513); // Brown
         }
+        
+        // Draw HUD: Score and Best
+        int score = getScore();
+        String scoreText = "Score: " + score + "     Best: " + bestScoreSnake;
+        g.drawString(font, Component.literal(scoreText), areaX + 4, areaY + 4, 0xFFFFFF, true);
+        
+        // Draw controls hint at bottom left
+        String controlsText = "Arrows/WASD: Move";
+        g.drawString(font, Component.literal(controlsText), areaX + 4, areaY + areaHeight - 12, 0xCCCCCC, true);
     }
     
     @Override
@@ -331,6 +380,26 @@ public class SnakeGame implements MiniGame {
     @Override
     public void onClose() {
         // No cleanup needed
+    }
+    
+    /**
+     * Play a sound effect locally (client-side only).
+     */
+    private void playLocalSound(SoundEvent event, float volume, float pitch) {
+        Minecraft mc = Minecraft.getInstance();
+        if (mc.player != null) {
+            mc.player.playSound(event, volume, pitch);
+        }
+    }
+    
+    /**
+     * Update best score if current score exceeds it.
+     */
+    private void updateBestScore() {
+        int currentScore = getScore();
+        if (currentScore > bestScoreSnake) {
+            bestScoreSnake = currentScore;
+        }
     }
 }
 

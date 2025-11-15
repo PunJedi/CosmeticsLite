@@ -13,7 +13,6 @@ import com.pastlands.cosmeticslite.network.PacketSetPetColor;
 import com.pastlands.cosmeticslite.network.PacketSetPetVariant;
 import com.pastlands.cosmeticslite.preview.MannequinPane;
 import com.pastlands.cosmeticslite.preview.ParticlePreviewPane;
-import com.pastlands.cosmeticslite.gadget.GadgetClientCommands;
 import com.mojang.blaze3d.systems.RenderSystem;
 import com.mojang.blaze3d.vertex.BufferBuilder;
 import com.mojang.blaze3d.vertex.DefaultVertexFormat;
@@ -42,27 +41,8 @@ import java.util.*;
  * Cosmetics UI (Forge 1.20.1 / 47.4.0)
  * Delegates to TabBar, GridView, MannequinPane, ParticlePreviewPane.
  * PETS tab shows Random Toggle + ColorWheelWidget + Variant dropdown.
- * GADGETS tab: shows pretty gadget name + description; no mannequin gadget FX preview.
  */
 public class CosmeticsChestScreen extends Screen {
-// --- Menu hold for active gadget FX (local to this screen) ---
-private static boolean HOLD_REGISTERED = false;
-private static int ACTIVE_HOLDS = 0;
-
-static {
-    if (!HOLD_REGISTERED) {
-        HOLD_REGISTERED = true;
-        com.pastlands.cosmeticslite.gadget.GadgetNet.ClientMenuHold.register(new com.pastlands.cosmeticslite.gadget.GadgetNet.ClientMenuHold.Listener() {
-            @Override public void onHoldStart(String id) { ACTIVE_HOLDS++; }
-            @Override public void onHoldEnd(String id)   { if (ACTIVE_HOLDS > 0) ACTIVE_HOLDS--; }
-        });
-    }
-}
-
-/** Only let the screen auto-return when no gadget effect is holding it. */
-private static boolean canAutoReturn() {
-    return ACTIVE_HOLDS == 0;
-}
 
     // ---- Panel size ----
     private static final int GUI_WIDTH  = 392;
@@ -204,7 +184,7 @@ private static boolean canAutoReturn() {
     public CosmeticsChestScreen() { super(Component.literal("Cosmetics")); }
 
     public enum Category {
-        PARTICLES("particles"), HATS("hats"), CAPES("capes"), PETS("pets"), GADGETS("gadgets");
+        PARTICLES("particles"), HATS("hats"), CAPES("capes"), PETS("pets");
         final String key; Category(String k){ this.key = k; } String key(){ return key; }
     }
 
@@ -325,8 +305,7 @@ private static boolean canAutoReturn() {
         boolean any = !CosmeticsRegistry.getByType("particles").isEmpty()
                 || !CosmeticsRegistry.getByType("hats").isEmpty()
                 || !CosmeticsRegistry.getByType("capes").isEmpty()
-                || !CosmeticsRegistry.getByType("pets").isEmpty()
-                || !CosmeticsRegistry.getByType("gadgets").isEmpty();
+                || !CosmeticsRegistry.getByType("pets").isEmpty();
         if (!any) CosmeticsRegistry.replaceAll(Collections.emptyList(), true);
     }
 
@@ -477,8 +456,7 @@ private static boolean canAutoReturn() {
                 new TabBar.Tab("particles", "Particles"),
                 new TabBar.Tab("hats",      "Hats"),
                 new TabBar.Tab("capes",     "Capes"),
-                new TabBar.Tab("pets",      "Pets"),
-                new TabBar.Tab("gadgets",   "Gadgets")
+                new TabBar.Tab("pets",      "Pets")
         ));
         tabBar.setActiveKey(state.getActiveType());
         tabBar.setOnChange(key -> {
@@ -702,26 +680,7 @@ private static boolean canAutoReturn() {
         grid.setData(src);
         grid.setCurrentPage(state.getCurrentPage());
 
-        // For gadgets: if something is equipped, auto-select it so the equip button works
-        if ("gadgets".equals(state.getActiveType())) {
-            ResourceLocation equippedGadget = ClientState.getEquippedId("gadgets");
-            if (!isAir(equippedGadget)) {
-                // Find the equipped gadget in the list and select it
-                int equippedIndex = findEquippedIndexIn(src, "gadgets");
-                if (equippedIndex >= 0) {
-                    state.setSelectedIndex("gadgets", equippedIndex);
-                    grid.setSelectedGlobalIndex(equippedIndex);
-                } else {
-                    state.clearSelection("gadgets");
-                    grid.setSelectedGlobalIndex(-1);
-                }
-            } else {
-                state.clearSelection("gadgets");
-                grid.setSelectedGlobalIndex(-1);
-            }
-        } else {
-            grid.setSelectedGlobalIndex(state.getSelectedIndex(state.getActiveType()));
-        }
+        grid.setSelectedGlobalIndex(state.getSelectedIndex(state.getActiveType()));
 
         grid.setEquippedId(ClientState.getEquippedId(state.getActiveType()));
 
@@ -755,21 +714,14 @@ private static boolean canAutoReturn() {
             return;
         }
         
-        // For gadgets: allow re-equipping the same gadget to fire it again (if not on cooldown)
-        // For other types: skip if already equipped
+        // Skip if already equipped
         boolean isReEquip = !isAir(currentId) && newId.equals(currentId);
-        if (isReEquip && !"gadgets".equals(type)) {
-            // For non-gadgets, skip if already equipped
+        if (isReEquip) {
             return;
         }
         
-        // For gadgets: if re-equipping, skip sending equip packet (already equipped)
-        // Just update UI and proceed to fire logic
-        if (!isReEquip || !"gadgets".equals(type)) {
-            // Only send equip packet if it's a new equip (not re-equipping gadgets)
-            PacketEquipRequest.send(type, newId, -1, -1, new CompoundTag());
-            ClientState.setEquippedId(type, newId);
-        }
+        PacketEquipRequest.send(type, newId, -1, -1, new CompoundTag());
+        ClientState.setEquippedId(type, newId);
 
         state.clearAllHighlights();
         rebuildGrid();
@@ -782,37 +734,6 @@ private static boolean canAutoReturn() {
             updatePetsUiFromPrefs();
             state.setStatus("", 0);
             // if (variantDropdown != null) variantDropdown.collapse();
-        }
-
-        // If we just equipped a GADGET, close menu and fire (cooldown check happens in scheduleUseFromCosmetics)
-        if ("gadgets".equals(type)) {
-            Minecraft mc = Minecraft.getInstance();
-            // Store the gadget ID and check cooldown after closing menu
-            final ResourceLocation gadgetId = newId;
-            // Close menu first, then check cooldown and fire
-            mc.setScreen(null);
-            // Use a small delay to ensure menu is fully closed before checking cooldown
-            mc.execute(() -> {
-                // Check cooldown and fire (or show message and reopen if on cooldown)
-                long cooldownRemaining = GadgetClientCommands.remainingMs(gadgetId);
-                if (cooldownRemaining > 0L) {
-                    // On cooldown - show message and reopen menu
-                    if (mc.player != null) {
-                        mc.player.displayClientMessage(
-                                net.minecraft.network.chat.Component.literal("Gadget on cooldown: " + GadgetClientCommands.prettyClock(cooldownRemaining)),
-                                true
-                        );
-                    }
-                    // Reopen menu after a brief delay
-                    mc.execute(() -> {
-                        mc.setScreen(new CosmeticsChestScreen());
-                    });
-                } else {
-                    // Not on cooldown - fire the gadget
-                    // 40 ticks ≈ 2 seconds (keep this buffer so it doesn't fire instantly)
-                    GadgetClientCommands.scheduleUseFromCosmetics(gadgetId, 40);
-                }
-            });
         }
     }
 
@@ -887,19 +808,8 @@ private static boolean canAutoReturn() {
         ResourceLocation equippedId = ClientState.getEquippedId(type);
         boolean selectionIsEquipped = selected != null && !isAir(equippedId) && selected.id().equals(equippedId);
 
-        // Equip: active if something is selected
-        // For gadgets: allow re-equipping to fire again (if not on cooldown)
-        // For other types: only active if not already equipped
-        if (selected == null) {
-            equipBtn.active = false;
-        } else if ("gadgets".equals(type)) {
-            // For gadgets: button is always active if something is selected
-            // It will fire the gadget if not on cooldown, or show cooldown message if it is
-            equipBtn.active = true;
-        } else {
-            // For other types: only active if not already equipped
-            equipBtn.active = !selectionIsEquipped;
-        }
+        // Equip: active if something is selected and not already equipped
+        equipBtn.active = selected != null && !selectionIsEquipped;
 
         // Clear Equipped: active only if anything is equipped across categories
         boolean anyEquipped = false;
@@ -1102,18 +1012,8 @@ fillRounded(g, left + 6, top + 6, right - 6, bottom - 6, 6, 0x1FFFFFFF);
         final int labelPadX = 5;
         final int labelH    = 12;
 
-        // ---- Gadget-aware caption in preview well (high-contrast & clamped) ----
-        ResourceLocation gadgetIdForLabel = resolveSelectedOrEquippedGadget();
-        String titleText;
-        String descText = "";
-
-        if (gadgetIdForLabel != null) {
-            titleText = com.pastlands.cosmeticslite.gadget.GadgetClientCommands.displayName(gadgetIdForLabel);
-            descText  = com.pastlands.cosmeticslite.gadget.GadgetClientCommands.shortDescription(gadgetIdForLabel);
-        } else {
-            titleText = "Preview";
-        }
-
+        // ---- Preview caption ----
+        String titleText = "Preview";
         Component lbl = Component.literal(titleText);
         int textW   = this.font.width(lbl);
         int capW    = Math.max(64, Math.min(PREVIEW_W - 12, textW + labelPadX * 2)); // clamp within pane
@@ -1130,40 +1030,12 @@ fillRounded(g, left + 6, top + 6, right - 6, bottom - 6, 6, 0x1FFFFFFF);
         int titleColor = 0xFFEDEFF2;
         g.drawString(this.font, lbl, capL + (capW - textW) / 2, capT + 2, titleColor, /*dropShadow=*/true);
 
-        // Description: wrap inside the preview pane, left-aligned under plaque
-        if (gadgetIdForLabel != null && !descText.isEmpty()) {
-            int textAreaL = previewL + 8;
-            int textAreaR = previewR - 8;
-            int maxWidth  = Math.max(40, textAreaR - textAreaL);
-
-            java.util.List<FormattedCharSequence> lines =
-                    this.font.split(Component.literal(descText), maxWidth);
-
-            int y = capB + 4;
-            int maxLines = 3; // avoid overflow
-            int drawn = 0;
-            for (var seq : lines) {
-                if (y > previewB - 12 || drawn >= maxLines) break;
-                g.drawString(this.font, seq, textAreaL, y, 0xFFC9D1D9, /*dropShadow=*/true);
-                y += 10;
-                drawn++;
-            }
-        }
-
         // Let panes decide if they render (Particles tab or equipped effect)
         mannequinPane.render(g);
         particlePane.render(g);
 
         // Render base widgets with masked mouse when dropdown overlaps
         super.render(g, maskedX, maskedY, partialTicks);
-
-        // --- Cooldown label (only on Gadgets tab), centered above the bottom buttons ---
-        if ("gadgets".equals(state.getActiveType())) {
-            // Buttons sit at baseY = bottom - 34; put the label just above them.
-            int centerX = (left + right) / 2;
-            int labelY  = (equipBtn != null ? equipBtn.getY() - 12 : bottom - 52);
-            renderGadgetCooldown(g, centerX, labelY);
-        }
 
         // Render dropdown last, so it sits on top of all buttons
         if (variantDropdown != null) {
@@ -1176,15 +1048,6 @@ fillRounded(g, left + 6, top + 6, right - 6, bottom - 6, 6, 0x1FFFFFFF);
     private void drawCenteredShadow(GuiGraphics g, Component text, int centerX, int y, int color) {
         int w = this.font.width(text);
         g.drawString(this.font, text, centerX - w / 2, y, color, true);
-    }
-
-    @Nullable
-    private ResourceLocation resolveSelectedOrEquippedGadget() {
-        if (!"gadgets".equals(state.getActiveType())) return null;
-        CosmeticDef sel = getCurrentlySelectedDef();
-        if (sel != null) return sel.id();
-        ResourceLocation eq = ClientState.getEquippedId("gadgets");
-        return isAir(eq) ? null : eq;
     }
 // -------------------- Tiny rotating gears (corner ornaments) --------------------
 private static final int GEAR_COLOR_TEETH = 0xFFB7BFC8; // desaturated steel
@@ -1374,8 +1237,6 @@ private void drawCornerGears(GuiGraphics g, int left, int top, int right, int bo
             petId = (p != null) ? ClientState.getEquippedId(p, "pets") : ClientState.getEquippedId("pets");
         }
         if (!isAir(petId)) map.put("pets", petId);
-
-        // Gadgets are active-use; nothing to include here.
 
         return map;
     }
@@ -1603,28 +1464,6 @@ private void drawCornerGears(GuiGraphics g, int left, int top, int right, int bo
                 g.blit(tex, x, y, 0, 0, w, h, tile, tile);
             }
         }
-    }
-
-    // --- Cooldown label for selected-or-equipped gadget ---
-    private void renderGadgetCooldown(net.minecraft.client.gui.GuiGraphics g, int centerX, int y) {
-        // Prefer the currently-selected gadget on the grid (if any), else fall back to equipped.
-        net.minecraft.resources.ResourceLocation id = null;
-        if ("gadgets".equals(state.getActiveType())) {
-            com.pastlands.cosmeticslite.CosmeticDef sel = getCurrentlySelectedDef();
-            if (sel != null) id = sel.id();
-        }
-        if (id == null) {
-            id = com.pastlands.cosmeticslite.ClientState.getEquippedId("gadgets");
-        }
-        if (id == null) return;
-
-        long ms = com.pastlands.cosmeticslite.gadget.GadgetClientCommands.remainingMs(id);
-        String label = (ms > 0L)
-            ? "Cooldown: " + com.pastlands.cosmeticslite.gadget.GadgetClientCommands.prettyClock(ms)
-            : "Ready";
-        int color = (ms > 0L) ? 0xFFC9A86E : 0xFFB8F18B; // gold-ish vs mint-ish
-        int w = this.font.width(label);
-        g.drawString(this.font, label, centerX - (w / 2), y, color, false);
     }
 
 // Draw 4 decorative rivets just inside the main rounded frame.

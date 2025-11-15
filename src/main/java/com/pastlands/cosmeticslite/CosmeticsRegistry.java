@@ -1,10 +1,6 @@
 package com.pastlands.cosmeticslite;
 
-import com.google.gson.JsonElement;
-import com.google.gson.JsonObject;
-import com.google.gson.JsonParser;
 import com.mojang.logging.LogUtils;
-import com.pastlands.cosmeticslite.gadget.GadgetNet;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.packs.resources.Resource;
@@ -18,17 +14,13 @@ import net.minecraftforge.server.ServerLifecycleHooks;
 import org.slf4j.Logger;
 
 import java.awt.Color;
-import java.io.InputStreamReader;
-import java.nio.charset.StandardCharsets;
 import java.util.*;
-import java.util.function.LongFunction;
 
 /**
  * In-memory registry for cosmetics, indexed by id, type, and pack.
- * - Seeds hats, pets, particles, gadgets
+ * - Seeds hats, pets, particles
  * - Auto-discovers capes from /textures/cape/
  * - Auto-discovers custom hat models from /models/hats/<category>/<name>.json
- * - Merges gadget presets from assets/cosmeticslite/gadgets_presets.json at startup and after replaceAll()
  *
  * Forge 47.4.0 (MC 1.20.1)
  */
@@ -41,7 +33,6 @@ public final class CosmeticsRegistry {
     public static final String TYPE_HATS      = "hats";
     public static final String TYPE_CAPES     = "capes";
     public static final String TYPE_PETS      = "pets";
-    public static final String TYPE_GADGETS   = "gadgets";
 
     // Master indexes
     private static final Map<ResourceLocation, CosmeticDef> BY_ID   = new LinkedHashMap<>();
@@ -55,7 +46,7 @@ public final class CosmeticsRegistry {
     // Public API
     // ------------------------------------------------------------------------
 
-    /** Replace full registry, optionally add dev seed, then merge gadget presets from assets. */
+    /** Replace full registry, optionally add dev seed. */
     public static synchronized void replaceAll(Collection<CosmeticDef> defs, boolean addDevSeed) {
         clearUnlocked();
         if (defs != null) {
@@ -63,20 +54,9 @@ public final class CosmeticsRegistry {
         }
         if (addDevSeed) installDevSeedUnlocked();
 
-        // Always merge gadget presets after seeds/defs so cooldowns/etc. are live.
-        loadGadgetPresetsFromAssets();
-
         // Stable ordering for UI
         for (List<CosmeticDef> list : BY_TYPE.values()) list.sort(Comparator.comparing(cd -> cd.id().getPath()));
-        LOGGER.info("[CosmeticsLite] Registry replaced: {} cosmetics (seed={}, presets merged)", BY_ID.size(), addDevSeed);
-
-        // Reinitialize gadget FX actions so cinematic gadgets remain active after registry rebuild
-        try {
-            GadgetNet.GadgetActions.bootstrapDefaults();
-            LOGGER.info("[CosmeticsLite] GadgetActions re-bootstrapped after registry replaceAll()");
-        } catch (Throwable t) {
-            LOGGER.error("[CosmeticsLite] Failed re-bootstrapping GadgetActions", t);
-        }
+        LOGGER.info("[CosmeticsLite] Registry replaced: {} cosmetics (seed={})", BY_ID.size(), addDevSeed);
     }
 
     public static synchronized List<CosmeticDef> getByType(String type) {
@@ -120,7 +100,7 @@ public final class CosmeticsRegistry {
         return Collections.unmodifiableSet(new LinkedHashSet<>(BY_PACK.keySet()));
     }
 
-    /** Merge/override properties for an existing def by id (used by gadget presets). */
+    /** Merge/override properties for an existing def by id. */
     public static synchronized void mergeProps(ResourceLocation id, Map<String, String> overrides) {
         ensureDevSeedIfEmpty();
         if (id == null || overrides == null || overrides.isEmpty()) return;
@@ -188,26 +168,11 @@ public final class CosmeticsRegistry {
         discoverCapesFromAssets();
         discoverCustomHatsFromAssets();
         seedDevPetsUnlocked();
-        seedDevGadgetsUnlocked();
-
-        // Merge gadget presets after base entries exist.
-        loadGadgetPresetsFromAssets();
-
         // Stable order
         List<CosmeticDef> capes = BY_TYPE.get(TYPE_CAPES);
         if (capes != null) capes.sort(Comparator.comparing(cd -> cd.id().getPath()));
         List<CosmeticDef> pets = BY_TYPE.get(TYPE_PETS);
         if (pets != null) pets.sort(Comparator.comparing(cd -> cd.id().getPath()));
-        List<CosmeticDef> gadgets = BY_TYPE.get(TYPE_GADGETS);
-        if (gadgets != null) gadgets.sort(Comparator.comparing(cd -> cd.id().getPath()));
-
-        // Ensure GadgetActions map stays populated for all cinematic gadget effects
-        try {
-            GadgetNet.GadgetActions.bootstrapDefaults();
-            LOGGER.info("[CosmeticsLite] GadgetActions re-bootstrapped after dev seed install");
-        } catch (Throwable t) {
-            LOGGER.error("[CosmeticsLite] Failed to re-bootstrap GadgetActions after dev seed", t);
-        }
     }
 
     // ------------------------------------------------------------------------
@@ -526,263 +491,9 @@ public final class CosmeticsRegistry {
     }
 
     // ------------------------------------------------------------------------
-    // Dev seed: Gadgets  (duration-driven UX: cooldown ~= duration)
+    // Dev seed: Gadgets - REMOVED
     // ------------------------------------------------------------------------
-    public static void seedDevGadgetsUnlocked() {
-        LOGGER.info("[CosmeticsLite] Seeding dev gadgets unlocked (duration-aligned cooldowns)…");
-
-        // Helper: ms -> string
-        LongFunction<String> ms = v -> Long.toString(Math.max(0L, v));
-
-        // Phase 1 — core gadgets (explicit duration_ms + cooldown_ms so UI returns fast)
-        registerUnlocked(new CosmeticDef(
-            rl("cosmeticslite","confetti_popper"),
-            "Confetti Popper","Burst a cone of confetti with a satisfying pop.",
-            TYPE_GADGETS,
-            BuiltInRegistries.ITEM.getKey(Items.FIREWORK_STAR),
-            Map.ofEntries(
-                Map.entry("pattern", "confetti_burst"),
-                Map.entry("duration_ms", "3900"),
-                Map.entry("menu_pad_ms", "1400"),
-                Map.entry("sound", "minecraft:item.firework_rocket.blast"),
-                Map.entry("volume", "0.60"),
-                Map.entry("pitch", "1.05"),
-                Map.entry("waves_json",
-                    "[" +
-                      " {\"delay_ms\":0,   \"count\":56, \"cone_deg\":58, \"speed\":0.70, \"size_min\":0.12, \"size_max\":0.22,"  +
-                      "  \"shapes\":[\"streamer\",\"disc\",\"rect\"]," +
-                      "  \"colors\":[\"#ff3b30\",\"#ffd60a\",\"#34c759\",\"#0a84ff\"]}," +
-                      " {\"delay_ms\":300, \"count\":48, \"cone_deg\":60, \"speed\":0.72, \"size_min\":0.12, \"size_max\":0.20," +
-                      "  \"shapes\":[\"streamer\",\"disc\"]," +
-                      "  \"colors\":[\"#ff9f0a\",\"#bf5af2\",\"#64d2ff\",\"#ffd60a\"]}," +
-                      " {\"delay_ms\":600, \"count\":44, \"cone_deg\":62, \"speed\":0.74, \"size_min\":0.11, \"size_max\":0.19," +
-                      "  \"shapes\":[\"streamer\",\"triangle\"]," +
-                      "  \"colors\":[\"#ff453a\",\"#30d158\",\"#0a84ff\",\"#ffd60a\"]}," +
-                      " {\"delay_ms\":900, \"count\":46, \"cone_deg\":64, \"speed\":0.76, \"size_min\":0.11, \"size_max\":0.19," +
-                      "  \"shapes\":[\"streamer\",\"disc\",\"rect\"]," +
-                      "  \"colors\":[\"#ff3b30\",\"#ffd60a\",\"#34c759\",\"#0a84ff\"]}," +
-                      " {\"delay_ms\":1200,\"count\":42, \"cone_deg\":66, \"speed\":0.78, \"size_min\":0.10, \"size_max\":0.18," +
-                      "  \"shapes\":[\"streamer\",\"disc\"]," +
-                      "  \"colors\":[\"#ff9f0a\",\"#bf5af2\",\"#64d2ff\",\"#ffd60a\"]}," +
-                      " {\"delay_ms\":1500,\"count\":42, \"cone_deg\":68, \"speed\":0.80, \"size_min\":0.10, \"size_max\":0.18," +
-                      "  \"shapes\":[\"streamer\",\"triangle\"]," +
-                      "  \"colors\":[\"#ff453a\",\"#30d158\",\"#0a84ff\",\"#ffd60a\"]}," +
-                      " {\"delay_ms\":1800,\"count\":40, \"cone_deg\":70, \"speed\":0.82, \"size_min\":0.10, \"size_max\":0.18," +
-                      "  \"shapes\":[\"streamer\",\"disc\",\"rect\"]," +
-                      "  \"colors\":[\"#ff3b30\",\"#ffd60a\",\"#34c759\",\"#0a84ff\"]}," +
-                      " {\"delay_ms\":2100,\"count\":38, \"cone_deg\":72, \"speed\":0.84, \"size_min\":0.10, \"size_max\":0.18," +
-                      "  \"shapes\":[\"streamer\",\"disc\"]," +
-                      "  \"colors\":[\"#ff9f0a\",\"#bf5af2\",\"#64d2ff\",\"#ffd60a\"]}," +
-                      " {\"delay_ms\":2400,\"count\":36, \"cone_deg\":74, \"speed\":0.86, \"size_min\":0.10, \"size_max\":0.18," +
-                      "  \"shapes\":[\"streamer\",\"triangle\"]," +
-                      "  \"colors\":[\"#ff453a\",\"#30d158\",\"#0a84ff\",\"#ffd60a\"]}," +
-                      " {\"delay_ms\":2700,\"count\":34, \"cone_deg\":76, \"speed\":0.88, \"size_min\":0.10, \"size_max\":0.18," +
-                      "  \"shapes\":[\"streamer\",\"disc\",\"rect\"]," +
-                      "  \"colors\":[\"#ff3b30\",\"#ffd60a\",\"#34c759\",\"#0a84ff\"]}," +
-                      " {\"delay_ms\":3000,\"count\":30, \"cone_deg\":78, \"speed\":0.90, \"size_min\":0.10, \"size_max\":0.18," +
-                      "  \"shapes\":[\"streamer\",\"disc\"]," +
-                      "  \"colors\":[\"#ff9f0a\",\"#bf5af2\",\"#64d2ff\",\"#ffd60a\"]}," +
-                      " {\"delay_ms\":3300,\"count\":26, \"cone_deg\":80, \"speed\":0.92, \"size_min\":0.10, \"size_max\":0.17," +
-                      "  \"shapes\":[\"streamer\",\"triangle\"]," +
-                      "  \"colors\":[\"#ff453a\",\"#30d158\",\"#0a84ff\",\"#ffd60a\"]}" +
-                    "]")
-            ),
-            "base"
-        ));
-
-        // Bubble Blower (this one can stay Map.of — only 5 pairs)
-        registerUnlocked(new CosmeticDef(
-            rl("cosmeticslite","bubble_blower"),
-            "Bubble Blower","Blow a shimmering bubble that pops after a short drift.",
-            TYPE_GADGETS,
-            BuiltInRegistries.ITEM.getKey(Items.GLASS_BOTTLE),
-            Map.of(
-                "preset", "projectile_bubble",
-                "sound",  rl("cosmeticslite","bubble_pop").toString(),
-                "speed",  "0.15",
-                "duration_ms",  ms.apply(2000L),  // ~40 ticks → 2000 ms
-                "menu_pad_ms",  "500"
-            ),
-            "base"
-        ));
-
-        // Gear Spark Emitter — Map.ofEntries (11 pairs)
-        registerUnlocked(new CosmeticDef(
-            rl("cosmeticslite","gear_spark_emitter"),
-            "Gear Spark Emitter","Spinning stack of spark rings around you.",
-            TYPE_GADGETS,
-            BuiltInRegistries.ITEM.getKey(Items.REDSTONE),
-            Map.ofEntries(
-                Map.entry("pattern",        "spark_ring_stack"),
-                Map.entry("duration_ms",    "4000"),
-                Map.entry("menu_pad_ms",    "800"),
-                Map.entry("ring_rate_ms",   "200"),
-                Map.entry("stack_rings",    "4"),
-                Map.entry("stack_height",   "1.6"),
-                Map.entry("ring_radius",    "1.8"),
-                Map.entry("ring_particles", "42"),
-                Map.entry("spin_speed",     "0.015"),
-                Map.entry("sound",          "minecraft:block.anvil.place"),
-                Map.entry("volume",         "0.9"),
-                Map.entry("pitch",          "0.9")
-            ),
-            "pastlands"
-        ));
-
-        // Phase 2 — extended set (now wired via Generic pattern so aliases are unnecessary)
-        registerUnlocked(new CosmeticDef(
-            rl("cosmeticslite","star_shower"), "Star Shower","A wide fan of glittering star sparks.",
-            TYPE_GADGETS, BuiltInRegistries.ITEM.getKey(Items.FIREWORK_STAR),
-            Map.ofEntries(
-                Map.entry("pattern","confetti_burst"),
-                Map.entry("duration_ms", ms.apply(1200L)),
-                Map.entry("menu_pad_ms", "400")
-            ),
-            "base"
-        ));
-        registerUnlocked(new CosmeticDef(
-            rl("cosmeticslite","sparkle_ring"), "Sparkle Ring","A shimmering arc that hums with light.",
-            TYPE_GADGETS, BuiltInRegistries.ITEM.getKey(Items.AMETHYST_SHARD),
-            Map.ofEntries(
-                Map.entry("pattern","spark_ring_stack"),
-                Map.entry("duration_ms", ms.apply(900L)),
-                Map.entry("menu_pad_ms", "300")
-            ),
-            "base"
-        ));
-        registerUnlocked(new CosmeticDef(
-            rl("cosmeticslite","bubble_stream"), "Bubble Stream","A steady stream of buoyant bubbles.",
-            TYPE_GADGETS, BuiltInRegistries.ITEM.getKey(Items.HEART_OF_THE_SEA),
-            Map.ofEntries(
-                // Use a gentle orbit as a visual stand-in under the generic path
-                Map.entry("pattern","orbit"),
-                Map.entry("duration_ms", ms.apply(1800L)),
-                Map.entry("menu_pad_ms", "500")
-            ),
-            "base"
-        ));
-        registerUnlocked(new CosmeticDef(
-            rl("cosmeticslite","confetti_fountain"), "Confetti Fountain","A dense fountain of festive confetti.",
-            TYPE_GADGETS, BuiltInRegistries.ITEM.getKey(Items.FIREWORK_ROCKET),
-            Map.ofEntries(
-                Map.entry("pattern","confetti_burst"),
-                Map.entry("duration_ms", ms.apply(1500L)),
-                Map.entry("menu_pad_ms", "400")
-            ),
-            "base"
-        ));
-        registerUnlocked(new CosmeticDef(
-            rl("cosmeticslite","spark_fan"), "Spark Fan","Fast sweeping sparks in a wide fan.",
-            TYPE_GADGETS, BuiltInRegistries.ITEM.getKey(Items.FLINT_AND_STEEL),
-            Map.ofEntries(
-                Map.entry("pattern","spark_fan"),
-                Map.entry("duration_ms", ms.apply(800L)),
-                Map.entry("menu_pad_ms", "300")
-            ),
-            "base"
-        ));
-        registerUnlocked(new CosmeticDef(
-            rl("cosmeticslite","glitter_pop"), "Glitter Pop","A quick burst of glitter and twinkle.",
-            TYPE_GADGETS, BuiltInRegistries.ITEM.getKey(Items.GLOWSTONE_DUST),
-            Map.ofEntries(
-                Map.entry("pattern","confetti_burst"),
-                Map.entry("duration_ms", ms.apply(700L)),
-                Map.entry("menu_pad_ms", "300")
-            ),
-            "base"
-        ));
-        registerUnlocked(new CosmeticDef(
-            rl("cosmeticslite","shimmer_wave"), "Shimmer Wave","Graceful wave of shimmering sparks.",
-            TYPE_GADGETS, BuiltInRegistries.ITEM.getKey(Items.PRISMARINE_CRYSTALS),
-            Map.ofEntries(
-                Map.entry("pattern","ring"),
-                Map.entry("duration_ms", ms.apply(1400L)),
-                Map.entry("menu_pad_ms", "400")
-            ),
-            "base"
-        ));
-        registerUnlocked(new CosmeticDef(
-            rl("cosmeticslite","bubble_blast"), "Bubble Blast","Chunky bubbles that pop into a trail.",
-            TYPE_GADGETS, BuiltInRegistries.ITEM.getKey(Items.TURTLE_HELMET),
-            Map.ofEntries(
-                // Visual stand-in under the generic path
-                Map.entry("pattern","ring"),
-                Map.entry("duration_ms", ms.apply(1300L)),
-                Map.entry("menu_pad_ms", "400")
-            ),
-            "base"
-        ));
-        registerUnlocked(new CosmeticDef(
-            rl("cosmeticslite","starlight_burst"), "Starlight Burst","Focused cone of starlit confetti.",
-            TYPE_GADGETS, BuiltInRegistries.ITEM.getKey(Items.NETHER_STAR),
-            Map.ofEntries(
-                Map.entry("pattern","confetti_burst"),
-                Map.entry("duration_ms", ms.apply(1100L)),
-                Map.entry("menu_pad_ms", "300")
-            ),
-            "base"
-        ));
-        registerUnlocked(new CosmeticDef(
-            rl("cosmeticslite","glitter_veil"), "Glitter Veil","Long, gentle curtain of glitter.",
-            TYPE_GADGETS, BuiltInRegistries.ITEM.getKey(Items.ALLAY_SPAWN_EGG),
-            Map.ofEntries(
-                Map.entry("pattern","confetti_burst"),
-                Map.entry("duration_ms", ms.apply(2000L)),
-                Map.entry("menu_pad_ms", "500")
-            ),
-            "base"
-        ));
-        registerUnlocked(new CosmeticDef(
-            rl("cosmeticslite","confetti_cyclone"), "Confetti Cyclone","Tornado of colorful confetti.",
-            TYPE_GADGETS, BuiltInRegistries.ITEM.getKey(Items.FIREWORK_ROCKET),
-            Map.ofEntries(
-                Map.entry("pattern","confetti_cyclone"),
-                Map.entry("count","500"),
-                Map.entry("height","7.0"),
-                Map.entry("radius","2.8"),
-                Map.entry("duration_ms", ms.apply(4000L)),
-                Map.entry("menu_pad_ms", "500")
-            ),
-            "base"
-        ));
-        // Cinematic IDs below are hardwired in GadgetNet; keep only durations
-        registerUnlocked(new CosmeticDef(
-            rl("cosmeticslite","supernova_burst"), "Supernova Burst","Massive starburst of radiant energy.",
-            TYPE_GADGETS, BuiltInRegistries.ITEM.getKey(Items.NETHER_STAR),
-            Map.of("duration_ms", ms.apply(1600L), "menu_pad_ms", "500"),
-            "base"
-        ));
-        registerUnlocked(new CosmeticDef(
-            rl("cosmeticslite","expanding_ring"), "Expanding Ring","Circular wave expanding outward.",
-            TYPE_GADGETS, BuiltInRegistries.ITEM.getKey(Items.AMETHYST_CLUSTER),
-            Map.of("duration_ms", ms.apply(1200L), "menu_pad_ms", "400"),
-            "base"
-        ));
-        registerUnlocked(new CosmeticDef(
-            rl("cosmeticslite","helix_stream"), "Helix Stream","Spiraling stream of sparks along your aim.",
-            TYPE_GADGETS, BuiltInRegistries.ITEM.getKey(Items.LIGHTNING_ROD),
-            Map.of("duration_ms", ms.apply(1400L), "menu_pad_ms", "400"),
-            "base"
-        ));
-        registerUnlocked(new CosmeticDef(
-            rl("cosmeticslite","firefly_orbit"), "Firefly Orbit","Gentle fireflies circling before lift-off.",
-            TYPE_GADGETS, BuiltInRegistries.ITEM.getKey(Items.SPORE_BLOSSOM),
-            Map.of("duration_ms", ms.apply(1800L), "menu_pad_ms", "500"),
-            "base"
-        ));
-        registerUnlocked(new CosmeticDef(
-            rl("cosmeticslite","ground_ripple"), "Ground Ripple","Flat shockwave rippling from your feet.",
-            TYPE_GADGETS, BuiltInRegistries.ITEM.getKey(Items.BASALT),
-            Map.of("duration_ms", ms.apply(900L), "menu_pad_ms", "300"),
-            "base"
-        ));
-        registerUnlocked(new CosmeticDef(
-            rl("cosmeticslite","sky_beacon"), "Sky Beacon","Vertical beam reaching into the sky.",
-            TYPE_GADGETS, BuiltInRegistries.ITEM.getKey(Items.BEACON),
-            Map.of("duration_ms", ms.apply(1500L), "menu_pad_ms", "500"),
-            "base"
-        ));
-    }
+    // Gadget seeding has been removed as part of gadget purge
 
     // ------------------------------------------------------------------------
     // Utility
@@ -805,57 +516,9 @@ public final class CosmeticsRegistry {
     }
 
     // ------------------------------------------------------------------------
-    // JSON presets loader (startup + after replaceAll)
+    // JSON presets loader - REMOVED
     // ------------------------------------------------------------------------
-    /** Loads assets/cosmeticslite/gadgets_presets.json and merges properties into matching gadget defs. */
-    private static void loadGadgetPresetsFromAssets() {
-        try {
-            ResourceManager rm = resolveResourceManager();
-            if (rm == null) {
-                LOGGER.debug("[CosmeticsLite] ResourceManager not available yet for gadget presets");
-                return;
-            }
-
-            ResourceLocation loc = ResourceLocation.fromNamespaceAndPath(CosmeticsLite.MODID, "gadgets_presets.json");
-            Optional<Resource> resOpt = rm.getResource(loc);
-            if (resOpt.isEmpty()) {
-                LOGGER.warn("[CosmeticsLite] No gadget presets found at {} (searched in ResourceManager)", loc);
-                return;
-            }
-            Resource res = resOpt.get();
-
-            int applied = 0;
-            try (InputStreamReader reader = new InputStreamReader(res.open(), StandardCharsets.UTF_8)) {
-                JsonElement rootEl = JsonParser.parseReader(reader);
-                if (rootEl == null || !rootEl.isJsonObject()) {
-                    LOGGER.warn("[CosmeticsLite] Gadget presets file exists but is not a JSON object: {}", loc);
-                    return;
-                }
-                JsonObject root = rootEl.getAsJsonObject();
-                for (Map.Entry<String, JsonElement> e : root.entrySet()) {
-                    ResourceLocation id = ResourceLocation.tryParse(e.getKey());
-                    if (id == null) continue;
-                    JsonElement val = e.getValue();
-                    if (val == null || !val.isJsonObject()) continue;
-
-                    Map<String, String> props = new HashMap<>();
-                    JsonObject obj = val.getAsJsonObject();
-                    for (Map.Entry<String, JsonElement> pe : obj.entrySet()) {
-                        JsonElement pv = pe.getValue();
-                        String asString = (pv == null || pv.isJsonNull())
-                                ? ""
-                                : (pv.isJsonPrimitive() ? pv.getAsJsonPrimitive().getAsString() : pv.toString());
-                        props.put(pe.getKey(), asString);
-                    }
-                    mergeProps(id, props);
-                    applied++;
-                }
-            }
-            LOGGER.info("[CosmeticsLite] Applied {} gadget preset(s) from {}", applied, loc);
-        } catch (Exception ex) {
-            LOGGER.error("[CosmeticsLite] Failed loading gadget presets", ex);
-        }
-    }
+    // Gadget preset loading has been removed as part of gadget purge
 
     // ------------------------------------------------------------------------
     // ResourceManager resolution with strict server/client safety
