@@ -14,7 +14,7 @@ A lightweight, Forge-based cosmetics framework for Minecraft **1.20.1** — hats
 - **Entitlements:** persistent player grants (packs or specific cosmetics) + admin bypass  
 - **Data-driven hats:** JSON baked models under `assets/cosmeticslite/models/hats/**`  
 - **Cape layer:** corrected orientation & motion, synced with player movement  
-- **Gadgets:** event-driven FX with `GadgetTiming` and `ClientBurstScheduler`
+- **Mini-Games** Polished with SFX and LeaderBoard
 
 ---
 
