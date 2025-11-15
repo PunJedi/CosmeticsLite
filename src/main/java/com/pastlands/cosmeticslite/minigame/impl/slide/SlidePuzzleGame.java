@@ -1,9 +1,13 @@
 package com.pastlands.cosmeticslite.minigame.impl.slide;
 
 import com.pastlands.cosmeticslite.minigame.api.MiniGame;
+import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.Font;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.network.chat.Component;
+import net.minecraft.sounds.SoundEvent;
+import net.minecraft.sounds.SoundEvents;
+import net.minecraft.util.Mth;
 
 import java.util.Random;
 
@@ -25,20 +29,36 @@ public class SlidePuzzleGame implements MiniGame {
     private double lastMouseX = -1, lastMouseY = -1; // For hover detection
     
     // Visual-only animation state
-    private boolean isAnimating = false;
-    private int animTileValue = 0;
-    private float animFromX = 0, animFromY = 0;
-    private float animToX = 0, animToY = 0;
-    private float animT = 0.0f;
-    private static final float ANIM_SPEED = 0.15f; // Animation speed per tick
+    private static class MovingTile {
+        int value;
+        float fromX, fromY;
+        float toX, toY;
+        float t; // 0 -> 1
+        boolean active;
+    }
+    
+    private MovingTile movingTile = new MovingTile();
+    private static final float ANIM_SPEED = 0.2f; // Animation speed per tick
+    
+    // Win sparkle effect
+    private int winPulseTicks = 0;
+    
+    // Pressed state tracking
+    private boolean tilePressed = false;
+    private int pressedTileX = -1;
+    private int pressedTileY = -1;
     
     @Override
     public void initGame() {
         random = new Random();
         solved = false;
         moveCount = 0;
-        isAnimating = false;
-        animT = 0.0f;
+        movingTile.active = false;
+        movingTile.t = 0.0f;
+        winPulseTicks = 0;
+        tilePressed = false;
+        pressedTileX = -1;
+        pressedTileY = -1;
         tiles = new int[GRID_HEIGHT][GRID_WIDTH];
         
         // Initialize in solved state
@@ -80,18 +100,28 @@ public class SlidePuzzleGame implements MiniGame {
     @Override
     public void tick() {
         // Update sliding animation
-        if (isAnimating) {
-            animT += ANIM_SPEED;
-            if (animT >= 1.0f) {
-                animT = 1.0f;
-                isAnimating = false;
+        if (movingTile.active) {
+            movingTile.t += ANIM_SPEED;
+            if (movingTile.t >= 1.0f) {
+                movingTile.t = 1.0f;
+                movingTile.active = false;
             }
         }
+        
+        // Update win sparkle
+        if (winPulseTicks > 0) {
+            winPulseTicks--;
+        }
+        
+        // Reset pressed state
+        tilePressed = false;
+        pressedTileX = -1;
+        pressedTileY = -1;
     }
     
     @Override
     public void handleMouseClick(double mouseX, double mouseY, int button) {
-        if (solved || button != 0) return; // Only left click
+        if (solved || button != 0 || movingTile.active) return; // Only left click, and not during animation
         
         double tileWidth = (double) areaWidth / GRID_WIDTH;
         double tileHeight = (double) areaHeight / GRID_HEIGHT;
@@ -103,19 +133,28 @@ public class SlidePuzzleGame implements MiniGame {
             return;
         }
         
+        // Track pressed state for visual feedback
+        tilePressed = true;
+        pressedTileX = tx;
+        pressedTileY = ty;
+        
         // Check if clicked tile is adjacent to empty
         int dx = Math.abs(tx - emptyX);
         int dy = Math.abs(ty - emptyY);
         
         if ((dx == 1 && dy == 0) || (dx == 0 && dy == 1)) {
-            // Start animation
-            animTileValue = tiles[ty][tx];
-            animFromX = tx;
-            animFromY = ty;
-            animToX = emptyX;
-            animToY = emptyY;
-            animT = 0.0f;
-            isAnimating = true;
+            // Valid move - start animation
+            int tileValue = tiles[ty][tx];
+            int tileWidthPx = areaWidth / GRID_WIDTH;
+            int tileHeightPx = areaHeight / GRID_HEIGHT;
+            
+            movingTile.value = tileValue;
+            movingTile.fromX = areaX + tx * tileWidthPx;
+            movingTile.fromY = areaY + ty * tileHeightPx;
+            movingTile.toX = areaX + emptyX * tileWidthPx;
+            movingTile.toY = areaY + emptyY * tileHeightPx;
+            movingTile.t = 0.0f;
+            movingTile.active = true;
             
             // Swap (logic updates immediately)
             tiles[emptyY][emptyX] = tiles[ty][tx];
@@ -124,13 +163,19 @@ public class SlidePuzzleGame implements MiniGame {
             emptyY = ty;
             moveCount++;
             
+            // Play slide sound
+            playLocalSound(SoundEvents.UI_LOOM_TAKE_RESULT, 0.3F, 1.4F);
+            
             checkSolved();
+        } else if (tiles[ty][tx] != 0) {
+            // Invalid click - tile not adjacent to empty
+            playLocalSound(SoundEvents.UI_BUTTON_CLICK.value(), 0.2F, 0.8F);
         }
     }
     
     @Override
     public void handleKeyPress(int keyCode) {
-        if (solved) return;
+        if (solved || movingTile.active) return;
         
         int newX = emptyX;
         int newY = emptyY;
@@ -149,14 +194,18 @@ public class SlidePuzzleGame implements MiniGame {
         }
         
         if (newX >= 0 && newX < GRID_WIDTH && newY >= 0 && newY < GRID_HEIGHT) {
-            // Start animation
-            animTileValue = tiles[newY][newX];
-            animFromX = newX;
-            animFromY = newY;
-            animToX = emptyX;
-            animToY = emptyY;
-            animT = 0.0f;
-            isAnimating = true;
+            // Valid move - start animation
+            int tileValue = tiles[newY][newX];
+            int tileWidthPx = areaWidth / GRID_WIDTH;
+            int tileHeightPx = areaHeight / GRID_HEIGHT;
+            
+            movingTile.value = tileValue;
+            movingTile.fromX = areaX + newX * tileWidthPx;
+            movingTile.fromY = areaY + newY * tileHeightPx;
+            movingTile.toX = areaX + emptyX * tileWidthPx;
+            movingTile.toY = areaY + emptyY * tileHeightPx;
+            movingTile.t = 0.0f;
+            movingTile.active = true;
             
             // Swap (logic updates immediately)
             tiles[emptyY][emptyX] = tiles[newY][newX];
@@ -164,6 +213,9 @@ public class SlidePuzzleGame implements MiniGame {
             emptyX = newX;
             emptyY = newY;
             moveCount++;
+            
+            // Play slide sound
+            playLocalSound(SoundEvents.UI_LOOM_TAKE_RESULT, 0.3F, 1.4F);
             
             checkSolved();
         }
@@ -184,7 +236,11 @@ public class SlidePuzzleGame implements MiniGame {
                 }
             }
         }
-        solved = true;
+        if (!solved) {
+            solved = true;
+            winPulseTicks = 20; // Start sparkle effect
+            playLocalSound(SoundEvents.UI_TOAST_CHALLENGE_COMPLETE, 0.7F, 1.0F);
+        }
     }
     
     @Override
@@ -193,6 +249,9 @@ public class SlidePuzzleGame implements MiniGame {
         this.areaY = areaY;
         this.areaWidth = areaWidth;
         this.areaHeight = areaHeight;
+        
+        // Draw board background
+        g.fill(areaX, areaY, areaX + areaWidth, areaY + areaHeight, 0xFF2C2F38);
         
         int tileWidth = areaWidth / GRID_WIDTH;
         int tileHeight = areaHeight / GRID_HEIGHT;
@@ -205,22 +264,24 @@ public class SlidePuzzleGame implements MiniGame {
             hoverY = (int) Math.floor((lastMouseY - areaY) / tileHeight);
         }
         
-        // Calculate interpolated animation position
-        float currentAnimT = isAnimating ? (animT + partialTicks * ANIM_SPEED) : 1.0f;
+        // Calculate interpolated animation position with easing
+        float currentAnimT = movingTile.active ? (movingTile.t + partialTicks * ANIM_SPEED) : 1.0f;
         if (currentAnimT > 1.0f) currentAnimT = 1.0f;
-        float animX = animFromX + (animToX - animFromX) * currentAnimT;
-        float animY = animFromY + (animToY - animFromY) * currentAnimT;
+        float easedT = easeOutCubic(currentAnimT);
+        float animPx = Mth.lerp(easedT, movingTile.fromX, movingTile.toX);
+        float animPy = Mth.lerp(easedT, movingTile.fromY, movingTile.toY);
         
-        // Success tint if solved
-        int successTint = solved ? 0x2000FF00 : 0x00000000;
+        // Find which tile is at the target position (to skip drawing it)
+        int targetTileX = (int)Math.floor((movingTile.toX - areaX) / tileWidth);
+        int targetTileY = (int)Math.floor((movingTile.toY - areaY) / tileHeight);
         
         for (int y = 0; y < GRID_HEIGHT; y++) {
             for (int x = 0; x < GRID_WIDTH; x++) {
                 int value = tiles[y][x];
                 
                 // Skip drawing the tile that's currently animating (we'll draw it separately)
-                if (isAnimating && value == animTileValue && 
-                    (int)animToX == x && (int)animToY == y) {
+                if (movingTile.active && value == movingTile.value && 
+                    targetTileX == x && targetTileY == y) {
                     continue;
                 }
                 
@@ -228,31 +289,46 @@ public class SlidePuzzleGame implements MiniGame {
                 int py = areaY + y * tileHeight;
                 
                 // Check if this tile can move (adjacent to empty)
-                boolean canMove = !solved && value != 0 && 
+                boolean canMove = !solved && value != 0 && !movingTile.active &&
                     ((Math.abs(x - emptyX) == 1 && y == emptyY) || 
                      (Math.abs(y - emptyY) == 1 && x == emptyX));
                 
                 // Check if hovered
                 boolean isHovered = hoverX == x && hoverY == y && canMove;
                 
-                if (value == 0) {
-                    // Empty tile - dark slate color
-                    g.fill(px, py, px + tileWidth, py + tileHeight, 0xFF303030);
-                } else {
-                    drawTile(g, font, px, py, tileWidth, tileHeight, value, isHovered, successTint != 0);
-                }
+                // Check if pressed
+                boolean isPressed = tilePressed && pressedTileX == x && pressedTileY == y;
                 
-                // Grid lines
-                g.fill(px + tileWidth - 1, py, px + tileWidth, py + tileHeight, 0xFF000000);
-                g.fill(px, py + tileHeight - 1, px + tileWidth, py + tileHeight, 0xFF000000);
+                if (value == 0) {
+                    // Empty tile - darker "hole" with slight bevel
+                    drawEmptyTile(g, px, py, tileWidth, tileHeight);
+                } else {
+                    drawTile(g, font, px, py, tileWidth, tileHeight, value, isHovered, isPressed);
+                }
             }
         }
         
         // Draw animating tile at interpolated position
-        if (isAnimating) {
-            float animPx = areaX + animX * tileWidth;
-            float animPy = areaY + animY * tileHeight;
-            drawTile(g, font, (int)animPx, (int)animPy, tileWidth, tileHeight, animTileValue, false, successTint != 0);
+        if (movingTile.active) {
+            drawTile(g, font, (int)animPx, (int)animPy, tileWidth, tileHeight, movingTile.value, false, false);
+        }
+        
+        // Draw win sparkle overlay
+        if (winPulseTicks > 0) {
+            float alphaT = winPulseTicks / 20.0f;
+            int alpha = (int)(alphaT * 120) & 0xFF;
+            int overlayColor = (alpha << 24) | 0xFFFFFF; // white with fading alpha
+            
+            // Draw a few random sparkle lines/plus shapes
+            for (int i = 0; i < 5; i++) {
+                int sparkleX = areaX + random.nextInt(areaWidth);
+                int sparkleY = areaY + random.nextInt(areaHeight);
+                int sparkleSize = 3;
+                
+                // Small plus shape
+                g.fill(sparkleX - sparkleSize, sparkleY, sparkleX + sparkleSize, sparkleY + 1, overlayColor);
+                g.fill(sparkleX, sparkleY - sparkleSize, sparkleX + 1, sparkleY + sparkleSize, overlayColor);
+            }
         }
         
         // Draw "Solved!" text at bottom if solved
@@ -264,43 +340,90 @@ public class SlidePuzzleGame implements MiniGame {
         }
     }
     
-    private void drawTile(GuiGraphics g, Font font, int px, int py, int tileWidth, int tileHeight, int value, boolean isHovered, boolean isSolved) {
-        // Outer border
-        g.fill(px, py, px + tileWidth, py + tileHeight, 0xFF606060);
+    private void drawTile(GuiGraphics g, Font font, int px, int py, int tileWidth, int tileHeight, int value, boolean isHovered, boolean isPressed) {
+        // Tile colors - higher contrast wooden look
+        int tileBase = 0xFFE7D2AE; // outer base
+        int tileInner = 0xFFF8ECD4; // lighter center inset
+        int tileBorder = 0xFFB0844C; // warm brown border
         
-        // Inner shadow/border for physical tile look
-        int innerPad = 3;
-        int tileColor = 0xFFE0E0E0;
-        if (isSolved) {
-            // Apply success tint
-            int r = (tileColor >> 16) & 0xFF;
-            int gr = ((tileColor >> 8) & 0xFF) + 20;
-            int b = (tileColor & 0xFF);
-            tileColor = 0xFF000000 | (r << 16) | (Math.min(255, gr) << 8) | b;
+        // Darken if pressed
+        if (isPressed) {
+            tileBase = darkenColor(tileBase, 0.9f);
+            tileInner = darkenColor(tileInner, 0.9f);
         }
         
-        // Base tile fill
-        g.fill(px + innerPad, py + innerPad, 
-            px + tileWidth - innerPad, py + tileHeight - innerPad, tileColor);
+        // Draw order: Fill full tile rect with base color
+        g.fill(px, py, px + tileWidth, py + tileHeight, tileBase);
         
-        // Inner highlight for 3D effect (lighter on top-left)
-        int highlightPad = innerPad + 1;
-        g.fill(px + highlightPad, py + highlightPad, 
-            px + tileWidth - innerPad, py + highlightPad + 2, 0x30FFFFFF);
-        g.fill(px + highlightPad, py + highlightPad, 
-            px + highlightPad + 2, py + tileHeight - innerPad, 0x30FFFFFF);
+        // Draw 1px border around with warm brown
+        g.fill(px, py, px + tileWidth, py + 1, tileBorder); // Top
+        g.fill(px, py + tileHeight - 1, px + tileWidth, py + tileHeight, tileBorder); // Bottom
+        g.fill(px, py, px + 1, py + tileHeight, tileBorder); // Left
+        g.fill(px + tileWidth - 1, py, px + tileWidth, py + tileHeight, tileBorder); // Right
         
-        // Hover highlight
+        // Draw inner inset (1px inside all sides) with lighter color
+        int insetPad = 1;
+        g.fill(px + insetPad, py + insetPad, 
+            px + tileWidth - insetPad, py + tileHeight - insetPad, tileInner);
+        
+        // Hover outline - 2px outline in light blue accent (only if hovered)
         if (isHovered) {
-            g.fill(px + innerPad, py + innerPad, 
-                px + tileWidth - innerPad, py + tileHeight - innerPad, 0x40FFFFFF);
+            int hoverColor = 0xFF5AC8FA; // light blue accent
+            int hoverThickness = 2;
+            // Top
+            g.fill(px, py, px + tileWidth, py + hoverThickness, hoverColor);
+            // Bottom
+            g.fill(px, py + tileHeight - hoverThickness, px + tileWidth, py + tileHeight, hoverColor);
+            // Left
+            g.fill(px, py, px + hoverThickness, py + tileHeight, hoverColor);
+            // Right
+            g.fill(px + tileWidth - hoverThickness, py, px + tileWidth, py + tileHeight, hoverColor);
         }
         
-        // Draw number - black with shadow for readability
+        // Draw number - solid dark text with shadow, centered
         String numStr = String.valueOf(value);
-        int numX = px + tileWidth / 2 - font.width(numStr) / 2;
-        int numY = py + tileHeight / 2 - font.lineHeight / 2;
-        g.drawString(font, Component.literal(numStr), numX, numY, 0xFF000000, true);
+        int textWidth = font.width(numStr);
+        int textX = px + (tileWidth - textWidth) / 2;
+        int textY = py + (tileHeight - font.lineHeight) / 2;
+        int numberColor = 0xFF111111; // almost black
+        g.drawString(font, Component.literal(numStr), textX, textY, numberColor, true); // shadow = true
+    }
+    
+    private void drawEmptyTile(GuiGraphics g, int px, int py, int tileWidth, int tileHeight) {
+        // Empty tile - clearly darker "hole"
+        int emptyBase = 0xFF2A2A32;
+        int emptyBorder = 0xFF18181E;
+        
+        // Fill full tile rect with base color
+        g.fill(px, py, px + tileWidth, py + tileHeight, emptyBase);
+        
+        // Draw 1px border (same thickness as numbered tiles for consistency)
+        g.fill(px, py, px + tileWidth, py + 1, emptyBorder); // Top
+        g.fill(px, py + tileHeight - 1, px + tileWidth, py + tileHeight, emptyBorder); // Bottom
+        g.fill(px, py, px + 1, py + tileHeight, emptyBorder); // Left
+        g.fill(px + tileWidth - 1, py, px + tileWidth, py + tileHeight, emptyBorder); // Right
+    }
+    
+    private int darkenColor(int color, float factor) {
+        int r = (int)(((color >> 16) & 0xFF) * factor);
+        int g = (int)(((color >> 8) & 0xFF) * factor);
+        int b = (int)((color & 0xFF) * factor);
+        return 0xFF000000 | (r << 16) | (g << 8) | b;
+    }
+    
+    private static float easeOutCubic(float t) {
+        t = 1.0f - t;
+        return 1.0f - t * t * t;
+    }
+    
+    /**
+     * Play a sound effect locally (client-side only).
+     */
+    private void playLocalSound(SoundEvent event, float volume, float pitch) {
+        Minecraft mc = Minecraft.getInstance();
+        if (mc.player != null) {
+            mc.player.playSound(event, volume, pitch);
+        }
     }
     
     // Helper method to update mouse position (called from screen)
@@ -329,4 +452,5 @@ public class SlidePuzzleGame implements MiniGame {
         // No cleanup needed
     }
 }
+
 

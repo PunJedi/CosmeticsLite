@@ -1,9 +1,12 @@
 package com.pastlands.cosmeticslite.minigame.impl.centipede;
 
 import com.pastlands.cosmeticslite.minigame.api.MiniGame;
+import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.Font;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.network.chat.Component;
+import net.minecraft.sounds.SoundEvent;
+import net.minecraft.sounds.SoundEvents;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -44,10 +47,23 @@ public class CentipedeGame implements MiniGame {
     
     private static class Segment {
         int x, y;
+        int hitFlashTicks; // Visual flash when hit
         
         Segment(int x, int y) {
             this.x = x;
             this.y = y;
+            this.hitFlashTicks = 0;
+        }
+    }
+    
+    private static class ImpactSpark {
+        int x, y;
+        int lifeTicks;
+        
+        ImpactSpark(int x, int y) {
+            this.x = x;
+            this.y = y;
+            this.lifeTicks = 6; // Lifetime in ticks
         }
     }
     
@@ -86,6 +102,7 @@ public class CentipedeGame implements MiniGame {
     private List<Shot> shots;
     private List<CentipedeChain> centipedes;
     private List<Mushroom> mushrooms;
+    private List<ImpactSpark> impactSparks; // Visual sparks on impact
     private boolean gameOver;
     private boolean playerWon;
     private int tickCounter;
@@ -105,7 +122,12 @@ public class CentipedeGame implements MiniGame {
     // Level cleared message
     private String levelClearedMessage = "";
     private int levelClearedTurns = 0;
-    private static final int LEVEL_CLEARED_DURATION = 60; // Show for 60 ticks (3 seconds at 20 TPS)
+    private static final int LEVEL_CLEARED_DURATION = 24; // Show for ~1.2 seconds (24 ticks at 20 TPS)
+    
+    // Difficulty tweaks
+    private static final int SPEED_INCREASE_PER_WAVE = 0; // Additional speed boost (0 = use existing DELAY_PER_LEVEL)
+    private static final int SEGMENT_INCREASE_INTERVAL = 3; // Add +1 segment every N waves
+    private static final int MAX_SEGMENT_INCREASE = 2; // Maximum additional segments from wave progression
     
     @Override
     public void initGame() {
@@ -134,6 +156,12 @@ public class CentipedeGame implements MiniGame {
         if (mushrooms == null) {
             mushrooms = new ArrayList<>();
         }
+        if (impactSparks == null) {
+            impactSparks = new ArrayList<>();
+        }
+        
+        // Clear any lingering effects
+        impactSparks.clear();
         
         // Start first level
         startLevel(levelIndex);
@@ -151,9 +179,14 @@ public class CentipedeGame implements MiniGame {
         shots = new ArrayList<>();
         
         // Calculate level-based parameters
-        int centipedeLength = Math.min(BASE_LENGTH + (level - 1) * LENGTH_PER_LEVEL, MAX_LENGTH);
+        // Base length + per-level increase + optional wave-based increase
+        int waveBasedIncrease = Math.min((level - 1) / SEGMENT_INCREASE_INTERVAL, MAX_SEGMENT_INCREASE);
+        int centipedeLength = Math.min(BASE_LENGTH + (level - 1) * LENGTH_PER_LEVEL + waveBasedIncrease, MAX_LENGTH);
+        
         // Clamp move delay between MIN_TICK_DELAY and BASE_TICK_DELAY
-        int calculatedDelay = BASE_TICK_DELAY + (level - 1) * DELAY_PER_LEVEL;
+        // Add small speed increase per wave (faster = lower delay)
+        int speedBoost = (level - 1) * SPEED_INCREASE_PER_WAVE;
+        int calculatedDelay = BASE_TICK_DELAY + (level - 1) * DELAY_PER_LEVEL - speedBoost;
         centipedeMoveInterval = Math.max(MIN_TICK_DELAY, Math.min(BASE_TICK_DELAY, calculatedDelay));
         
         // Generate field for this level
@@ -225,6 +258,21 @@ public class CentipedeGame implements MiniGame {
             }
         }
         
+        // Update impact sparks
+        impactSparks.removeIf(spark -> {
+            spark.lifeTicks--;
+            return spark.lifeTicks <= 0;
+        });
+        
+        // Update segment hit flashes
+        for (CentipedeChain chain : centipedes) {
+            for (Segment seg : chain.segments) {
+                if (seg.hitFlashTicks > 0) {
+                    seg.hitFlashTicks--;
+                }
+            }
+        }
+        
         // Move shots upward
         if (tickCounter % SHOT_MOVE_INTERVAL == 0) {
             // First, move all shots
@@ -254,6 +302,13 @@ public class CentipedeGame implements MiniGame {
                     for (int i = 0; i < chain.segments.size(); i++) {
                         Segment seg = chain.segments.get(i);
                         if (seg.x == shot.x && seg.y == shot.y) {
+                            // Hit! Trigger flash and impact spark
+                            seg.hitFlashTicks = 4;
+                            impactSparks.add(new ImpactSpark(shot.x, shot.y));
+                            
+                            // Play hit sound
+                            playLocalSound(SoundEvents.NOTE_BLOCK_PLING.value(), 0.4F, 1.5F); // Short "zap" sound
+                            
                             // Hit! Remove this segment
                             shotsToRemove.add(shot);
                             hitSegment = true;
@@ -293,6 +348,12 @@ public class CentipedeGame implements MiniGame {
                 // Check if shot hit a mushroom
                 for (Mushroom mushroom : mushrooms) {
                     if (mushroom.x == shot.x && mushroom.y == shot.y) {
+                        // Add impact spark
+                        impactSparks.add(new ImpactSpark(shot.x, shot.y));
+                        
+                        // Play mushroom hit sound
+                        playLocalSound(SoundEvents.WOOD_HIT, 0.3F, 0.9F); // Muted woody "thunk"
+                        
                         mushroom.hp--;
                         shotsToRemove.add(shot);
                         if (mushroom.hp <= 0) {
@@ -311,11 +372,14 @@ public class CentipedeGame implements MiniGame {
             
             // Check if all centipedes destroyed - advance to next level instead of game over
             if (centipedes.isEmpty() && !gameOver && levelClearedTurns == 0) {
-                // Level cleared! Advance to next level
+                // Wave cleared! Advance to next level
                 levelIndex++;
                 score += levelIndex * 10; // Bonus score for clearing level
-                levelClearedMessage = "Level " + (levelIndex - 1) + " cleared!";
+                levelClearedMessage = "Wave " + (levelIndex - 1) + " cleared!";
                 levelClearedTurns = LEVEL_CLEARED_DURATION;
+                
+                // Play wave clear sound
+                playLocalSound(SoundEvents.UI_TOAST_CHALLENGE_COMPLETE, 0.5F, 1.3F); // Short, bright success chime
                 
                 // Start next level after a short delay (handled by levelClearedTurns)
             }
@@ -366,6 +430,8 @@ public class CentipedeGame implements MiniGame {
                 if (nextY >= playerY) {
                     gameOver = true;
                     playerWon = false;
+                    // Play player hit sound (only once per game-over)
+                    playLocalSound(SoundEvents.GENERIC_EXPLODE, 0.5F, 0.7F); // Lower pitch "explosion"/thud
                     return;
                 }
                 
@@ -420,6 +486,8 @@ public class CentipedeGame implements MiniGame {
                 if (!hasShotAbove) {
                     shots.add(new Shot(playerX, playerY - 1));
                     shotCooldownTicks = SHOT_COOLDOWN;
+                    // Play shoot sound when bullet is actually created
+                    playLocalSound(SoundEvents.ARROW_SHOOT, 0.4F, 1.3F); // Medium volume, slightly higher pitch
                 }
             }
         }
@@ -430,26 +498,48 @@ public class CentipedeGame implements MiniGame {
         int cellWidth = areaWidth / GRID_WIDTH;
         int cellHeight = areaHeight / GRID_HEIGHT;
         
-        // Draw grid background (black playfield)
-        g.fill(areaX, areaY, areaX + areaWidth, areaY + areaHeight, 0xFF000000);
+        // Draw grid background (neutral very dark gray, same tone as other mini-games)
+        int bgColor = 0xFF1A1A1A; // Very dark gray
+        g.fill(areaX, areaY, areaX + areaWidth, areaY + areaHeight, bgColor);
+        
+        // Draw subtle vertical grid lines (low-alpha lines for movement lanes)
+        int gridLineColor = 0x10101010; // Very low alpha
+        for (int x = 1; x < GRID_WIDTH; x++) {
+            int lineX = areaX + x * cellWidth;
+            g.fill(lineX - 1, areaY, lineX, areaY + areaHeight, gridLineColor);
+        }
         
         // Draw subtle ground line at the bottom (2-3px tall strip)
         int groundHeight = 3;
         int groundY = areaY + areaHeight - groundHeight;
         g.fill(areaX, groundY, areaX + areaWidth, areaY + areaHeight, 0xFF2A2A2A); // Slightly lighter dark color
         
-        // Draw mushrooms
+        // Draw mushrooms (two-tone mushroom: cap with darker top edge, stem)
         for (Mushroom mushroom : mushrooms) {
             int px = areaX + mushroom.x * cellWidth;
             int py = areaY + mushroom.y * cellHeight;
-            // Brighter brown
-            int color = mushroom.hp > 1 ? 0xFFA0522D : 0xFF8B4513; // Brighter brown shades
-            g.fill(px + 1, py + 1, px + cellWidth - 1, py + cellHeight - 1, color);
-            // Darker cap stripe at top
-            g.fill(px + 1, py + 1, px + cellWidth - 1, py + 2, 0xFF654321); // Darker brown stripe
+            
+            // Check if damaged (partially destroyed)
+            float alpha = mushroom.hp <= 0 ? 0.5f : 1.0f;
+            int baseColor = 0xFFA0522D; // Warm brown
+            int capColor = (int)(alpha * 0xFF) << 24 | (baseColor & 0x00FFFFFF);
+            int darkerCap = (int)(alpha * 0xFF) << 24 | 0x00654321; // Darker brown for top edge
+            int stemColor = (int)(alpha * 0xFF) << 24 | 0x00D2B48C; // Lighter tan for stem
+            
+            // Cap: rounded rectangle (or simple rectangle with darker top edge)
+            int capHeight = cellHeight * 2 / 3;
+            g.fill(px + 1, py + 1, px + cellWidth - 1, py + 1 + capHeight, capColor);
+            // Darker top edge stripe
+            g.fill(px + 1, py + 1, px + cellWidth - 1, py + 2, darkerCap);
+            
+            // Stem: small lighter rectangle under the cap
+            int stemWidth = cellWidth / 2;
+            int stemX = px + (cellWidth - stemWidth) / 2;
+            int stemY = py + capHeight;
+            g.fill(stemX, stemY, stemX + stemWidth, py + cellHeight - 1, stemColor);
         }
         
-        // Draw centipede segments
+        // Draw centipede segments (with hit flash effect and gradient)
         for (CentipedeChain chain : centipedes) {
             for (int i = 0; i < chain.segments.size(); i++) {
                 Segment seg = chain.segments.get(i);
@@ -457,18 +547,27 @@ public class CentipedeGame implements MiniGame {
                 int py = areaY + seg.y * cellHeight;
                 
                 boolean isHead = (i == 0);
-                // Head segment slightly brighter
-                int outerColor = isHead ? 0xFF00FF00 : ((i % 2 == 0) ? 0xFF00FF00 : 0xFF00AA00); // Green shades
-                int innerColor = isHead ? 0xFF44FF44 : 0xFF22FF22; // Lighter green for inner
                 
-                // Outer square
-                g.fill(px + 1, py + 1, px + cellWidth - 1, py + cellHeight - 1, outerColor);
+                // Hit flash: draw bright yellow/white overlay if hit
+                if (seg.hitFlashTicks > 0) {
+                    int flashAlpha = (seg.hitFlashTicks * 0xFF / 4) << 24;
+                    int flashColor = flashAlpha | 0x00FFFF00; // Yellow/white
+                    g.fill(px + 1, py + 1, px + cellWidth - 1, py + cellHeight - 1, flashColor);
+                }
                 
-                // Inner square (smaller, lighter)
-                int innerPad = 2;
-                g.fill(px + innerPad, py + innerPad, px + cellWidth - innerPad, py + cellHeight - innerPad, innerColor);
+                // Body segments: gradient illusion (darker bottom, lighter top)
+                // Head segment: slightly brighter green
+                int bottomColor = isHead ? 0xFF00CC00 : 0xFF00AA00; // Darker green bottom
+                int topColor = isHead ? 0xFF44FF44 : 0xFF22FF22; // Lighter green top
                 
-                // Optional: head segment with two pixel "eyes"
+                // Draw gradient: bottom half darker, top half lighter
+                int midY = py + cellHeight / 2;
+                // Bottom half (darker)
+                g.fill(px + 1, midY, px + cellWidth - 1, py + cellHeight - 1, bottomColor);
+                // Top half (lighter)
+                g.fill(px + 1, py + 1, px + cellWidth - 1, midY, topColor);
+                
+                // Optional: head segment with two tiny darker dots for eyes
                 if (isHead) {
                     int eyeSize = 1;
                     int eyeOffsetX = cellWidth / 4;
@@ -481,44 +580,89 @@ public class CentipedeGame implements MiniGame {
             }
         }
         
-        // Draw shots (bright yellow/white for visibility)
+        // Draw shots (light-yellow rectangle with tiny highlight at front)
         for (Shot shot : shots) {
             int px = areaX + shot.x * cellWidth;
             int py = areaY + shot.y * cellHeight;
-            // Bright white/yellow for high contrast
-            g.fill(px + cellWidth / 2 - 1, py, px + cellWidth / 2 + 1, py + cellHeight, 0xFFFFFF00); // Bright yellow
-            // Add white center for extra visibility
-            g.fill(px + cellWidth / 2, py + cellHeight / 4, px + cellWidth / 2 + 1, py + 3 * cellHeight / 4, 0xFFFFFFFF);
+            // Light-yellow rectangle
+            int bulletWidth = Math.max(2, cellWidth / 3);
+            int bulletX = px + (cellWidth - bulletWidth) / 2;
+            g.fill(bulletX, py + 1, bulletX + bulletWidth, py + cellHeight - 1, 0xFFFFFFAA); // Light yellow
+            // Tiny highlight at the front (top)
+            int highlightSize = Math.max(1, bulletWidth / 2);
+            g.fill(bulletX + (bulletWidth - highlightSize) / 2, py + 1, 
+                   bulletX + (bulletWidth - highlightSize) / 2 + highlightSize, py + 2, 0xFFFFFFFF); // White highlight
         }
         
-        // Draw player shooter
+        // Draw impact sparks (radiating lines from collision points)
+        for (ImpactSpark spark : impactSparks) {
+            int px = areaX + spark.x * cellWidth + cellWidth / 2;
+            int py = areaY + spark.y * cellHeight + cellHeight / 2;
+            int sparkLength = Math.min(cellWidth, cellHeight) / 3;
+            float alpha = spark.lifeTicks / 6.0f;
+            int sparkColor = ((int)(alpha * 0xFF) << 24) | 0x00FFFF00; // Yellow/white, fading
+            
+            // Draw 4-6 short lines radiating out
+            for (int i = 0; i < 6; i++) {
+                double angle = (i * Math.PI * 2) / 6;
+                int endX = px + (int)(Math.cos(angle) * sparkLength);
+                int endY = py + (int)(Math.sin(angle) * sparkLength);
+                // Draw line (simple approximation with small rectangles)
+                drawLine(g, px, py, endX, endY, sparkColor, 1);
+            }
+        }
+        
+        // Draw player cannon (simple cannon sprite: base, turret, barrel)
         int playerPx = areaX + playerX * cellWidth;
         int playerPy = areaY + playerY * cellHeight;
-        // Bright red rectangle
-        g.fill(playerPx + 1, playerPy + 1, playerPx + cellWidth - 1, playerPy + cellHeight - 1, 0xFFFF0000);
         
-        // Small "gun barrel" offset upwards (tiny rectangle)
-        int barrelWidth = cellWidth / 2;
-        int barrelHeight = cellHeight / 3;
+        // Base: wider rectangle (cannon body)
+        int baseWidth = cellWidth - 2;
+        int baseHeight = cellHeight * 2 / 3;
+        int baseX = playerPx + 1;
+        int baseY = playerPy + cellHeight - baseHeight;
+        int baseColor = 0xFFFF4444; // Lighter red (inner highlight)
+        int baseBorder = 0xFFCC0000; // Darker red (outer border)
+        
+        // Outer border
+        g.fill(baseX, baseY, baseX + baseWidth, baseY + 1, baseBorder);
+        g.fill(baseX, baseY + baseHeight - 1, baseX + baseWidth, baseY + baseHeight, baseBorder);
+        g.fill(baseX, baseY, baseX + 1, baseY + baseHeight, baseBorder);
+        g.fill(baseX + baseWidth - 1, baseY, baseX + baseWidth, baseY + baseHeight, baseBorder);
+        
+        // Inner fill (lighter)
+        g.fill(baseX + 1, baseY + 1, baseX + baseWidth - 1, baseY + baseHeight - 1, baseColor);
+        
+        // Turret: smaller rectangle on top
+        int turretWidth = baseWidth * 2 / 3;
+        int turretHeight = baseHeight / 2;
+        int turretX = playerPx + (cellWidth - turretWidth) / 2;
+        int turretY = baseY - turretHeight;
+        g.fill(turretX, turretY, turretX + turretWidth, turretY + turretHeight, baseColor);
+        g.fill(turretX, turretY, turretX + turretWidth, turretY + 1, baseBorder);
+        g.fill(turretX, turretY + turretHeight - 1, turretX + turretWidth, turretY + turretHeight, baseBorder);
+        g.fill(turretX, turretY, turretX + 1, turretY + turretHeight, baseBorder);
+        g.fill(turretX + turretWidth - 1, turretY, turretX + turretWidth, turretY + turretHeight, baseBorder);
+        
+        // Barrel hint: tiny darker rectangle at the top center
+        int barrelWidth = turretWidth / 2;
+        int barrelHeight = cellHeight / 4;
         int barrelX = playerPx + (cellWidth - barrelWidth) / 2;
-        int barrelY = playerPy - barrelHeight;
-        g.fill(barrelX, barrelY, barrelX + barrelWidth, barrelY + barrelHeight, 0xFFFF0000);
+        int barrelY = turretY - barrelHeight;
+        g.fill(barrelX, barrelY, barrelX + barrelWidth, barrelY + barrelHeight, baseBorder);
         
-        // Draw score and level
-        g.drawString(font, Component.literal("Score: " + score), areaX + 4, areaY + 4, 0xFFFFFF, true);
-        g.drawString(font, Component.literal("Level: " + levelIndex), areaX + 4, areaY + 16, 0xFFFFFF, true);
+        // Draw UI text: Score left, Wave right
+        g.drawString(font, Component.literal("Score: " + score), areaX + 4, areaY + 4, 0xFFFFFFFF, true);
+        String waveText = "Wave: " + levelIndex;
+        int waveTextWidth = font.width(waveText);
+        g.drawString(font, Component.literal(waveText), areaX + areaWidth - waveTextWidth - 4, areaY + 4, 0xFFFFFFFF, true);
         
-        // Draw level cleared message
+        // Draw wave cleared message (centered white text with shadow)
         if (!levelClearedMessage.isEmpty() && levelClearedTurns > 0) {
             int centerX = areaX + areaWidth / 2;
             int centerY = areaY + areaHeight / 2;
             int textWidth = font.width(levelClearedMessage);
-            g.drawString(font, Component.literal(levelClearedMessage), centerX - textWidth / 2, centerY, 0xFFFFFF00, true); // Yellow
-        }
-        
-        // Instructions (only when not game over - overlay is handled by MiniGamePlayScreen)
-        if (!gameOver) {
-            g.drawString(font, Component.literal("Left/Right: Move, Space: Shoot"), areaX + 4, areaY + areaHeight - 12, 0xFFFFFF, true);
+            g.drawString(font, Component.literal(levelClearedMessage), centerX - textWidth / 2, centerY, 0xFFFFFFFF, true); // White with shadow
         }
     }
     
@@ -540,6 +684,52 @@ public class CentipedeGame implements MiniGame {
     @Override
     public void onClose() {
         // No cleanup needed
+    }
+    
+    /**
+     * Play a sound effect locally (client-side only).
+     */
+    private void playLocalSound(SoundEvent event, float volume, float pitch) {
+        Minecraft mc = Minecraft.getInstance();
+        if (mc.player != null) {
+            mc.player.playSound(event, volume, pitch);
+        }
+    }
+    
+    /**
+     * Draw a simple line between two points (for impact sparks).
+     */
+    private void drawLine(GuiGraphics g, int x1, int y1, int x2, int y2, int color, int thickness) {
+        // Simple line drawing using Bresenham-like algorithm
+        int dx = Math.abs(x2 - x1);
+        int dy = Math.abs(y2 - y1);
+        int sx = x1 < x2 ? 1 : -1;
+        int sy = y1 < y2 ? 1 : -1;
+        int err = dx - dy;
+        
+        int x = x1;
+        int y = y1;
+        
+        while (true) {
+            // Draw pixel with thickness
+            for (int tx = -thickness / 2; tx <= thickness / 2; tx++) {
+                for (int ty = -thickness / 2; ty <= thickness / 2; ty++) {
+                    g.fill(x + tx, y + ty, x + tx + 1, y + ty + 1, color);
+                }
+            }
+            
+            if (x == x2 && y == y2) break;
+            
+            int e2 = 2 * err;
+            if (e2 > -dy) {
+                err -= dy;
+                x += sx;
+            }
+            if (e2 < dx) {
+                err += dx;
+                y += sy;
+            }
+        }
     }
 }
 
