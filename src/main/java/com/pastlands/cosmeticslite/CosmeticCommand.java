@@ -6,7 +6,6 @@ import com.mojang.brigadier.arguments.StringArgumentType;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.Commands;
 import net.minecraft.commands.arguments.EntityArgument;
-import net.minecraft.commands.arguments.ResourceLocationArgument;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.ResourceLocation;
@@ -20,6 +19,24 @@ import java.util.stream.Collectors;
 public class CosmeticCommand {
 
     private static final String UNLOCK_TAG = "cosmeticslite_unlocked";
+
+    // Pack ID constants for shortcut tokens
+    private static final ResourceLocation PACK_HATS_FANTASY =
+        ResourceLocation.fromNamespaceAndPath(CosmeticsLite.MODID, "packs/hats_fantasy");
+    private static final ResourceLocation PACK_HATS_ANIMALS =
+        ResourceLocation.fromNamespaceAndPath(CosmeticsLite.MODID, "packs/hats_animals");
+    private static final ResourceLocation PACK_HATS_FOOD =
+        ResourceLocation.fromNamespaceAndPath(CosmeticsLite.MODID, "packs/hats_food");
+    private static final ResourceLocation PACK_MINIGAMES =
+        ResourceLocation.fromNamespaceAndPath(CosmeticsLite.MODID, "packs/minigames");
+
+    // Token suggestions for tab completion
+    private static final String[] SHORTCUT_TOKENS = {
+        "hats.fantasy",
+        "hats.animals",
+        "hats.food",
+        "minigames"
+    };
 
     public static void register(CommandDispatcher<CommandSourceStack> dispatcher) {
         dispatcher.register(Commands.literal("cosmetics")
@@ -94,6 +111,46 @@ public class CosmeticCommand {
                             }
                             return 1;
                         })
+                        // Token-based grant shortcut
+                        .then(Commands.argument("token", StringArgumentType.word())
+                            .suggests((ctx, builder) ->
+                                net.minecraft.commands.SharedSuggestionProvider.suggest(SHORTCUT_TOKENS, builder)
+                            )
+                            .executes(ctx -> {
+                                ServerPlayer sender = ctx.getSource().getPlayerOrException();
+                                if (!canUseAdmin(sender)) {
+                                    ctx.getSource().sendFailure(Component.literal("§cYou do not have permission to use admin commands."));
+                                    return 0;
+                                }
+
+                                Collection<ServerPlayer> targets = EntityArgument.getPlayers(ctx, "player");
+                                String token = StringArgumentType.getString(ctx, "token");
+
+                                boolean anySuccess = false;
+                                for (ServerPlayer target : targets) {
+                                    if (applyShortcutGrant(target, token)) {
+                                        CosmeticsLite.sendEntitlements(target);
+                                        anySuccess = true;
+                                    }
+                                }
+
+                                if (!anySuccess) {
+                                    ctx.getSource().sendFailure(
+                                        Component.literal("§cUnknown entitlements token: " + token)
+                                    );
+                                    return 0;
+                                }
+
+                                String list = targets.stream()
+                                    .map(p -> p.getName().getString())
+                                    .collect(Collectors.joining(", "));
+                                ctx.getSource().sendSuccess(
+                                    () -> Component.literal("§aGranted '" + token + "' to " + list),
+                                    true
+                                );
+                                return 1;
+                            })
+                        )
                     )
                 )
                 .then(Commands.literal("revoke")
@@ -114,115 +171,44 @@ public class CosmeticCommand {
                             }
                             return 1;
                         })
-                    )
-                )
-                // ---- New: Entitlements (pack/cosmetic) management
-                .then(Commands.literal("entitlements")
-                    // /cosmetics admin entitlements grant pack|cosmetic <player(s)> <namespace:path>
-                    .then(Commands.literal("grant")
-                        .then(Commands.literal("pack")
-                            .then(Commands.argument("player", EntityArgument.players())
-                                .then(Commands.argument("id", ResourceLocationArgument.id())
-                                    .executes(ctx -> {
-                                        ServerPlayer sender = ctx.getSource().getPlayerOrException();
-                                        if (!canUseAdmin(sender)) {
-                                            ctx.getSource().sendFailure(Component.literal("§cYou do not have permission to use admin commands."));
-                                            return 0;
-                                        }
-                                        Collection<ServerPlayer> targets = EntityArgument.getPlayers(ctx, "player");
-                                        ResourceLocation id = ResourceLocationArgument.getId(ctx, "id");
-                                        for (ServerPlayer target : targets) {
-                                            PlayerEntitlements.get(target).ifPresent(cap -> cap.grantPack(id));
-                                            CosmeticsLite.sendEntitlements(target);
-                                        }
-                                        ctx.getSource().sendSuccess(() -> Component.literal("§aGranted pack " + id + " to " +
-                                                targets.stream().map(p -> p.getName().getString()).collect(Collectors.joining(", "))), true);
-                                        return 1;
-                                    })
-                                )
+                        // Token-based revoke shortcut
+                        .then(Commands.argument("token", StringArgumentType.word())
+                            .suggests((ctx, builder) ->
+                                net.minecraft.commands.SharedSuggestionProvider.suggest(SHORTCUT_TOKENS, builder)
                             )
-                        )
-                        .then(Commands.literal("cosmetic")
-                            .then(Commands.argument("player", EntityArgument.players())
-                                .then(Commands.argument("id", ResourceLocationArgument.id())
-                                    .executes(ctx -> {
-                                        ServerPlayer sender = ctx.getSource().getPlayerOrException();
-                                        if (!canUseAdmin(sender)) {
-                                            ctx.getSource().sendFailure(Component.literal("§cYou do not have permission to use admin commands."));
-                                            return 0;
-                                        }
-                                        Collection<ServerPlayer> targets = EntityArgument.getPlayers(ctx, "player");
-                                        ResourceLocation id = ResourceLocationArgument.getId(ctx, "id");
-                                        for (ServerPlayer target : targets) {
-                                            PlayerEntitlements.get(target).ifPresent(cap -> cap.grantCosmetic(id));
-                                            CosmeticsLite.sendEntitlements(target);
-                                        }
-                                        ctx.getSource().sendSuccess(() -> Component.literal("§aGranted cosmetic " + id + " to " +
-                                                targets.stream().map(p -> p.getName().getString()).collect(Collectors.joining(", "))), true);
-                                        return 1;
-                                    })
-                                )
-                            )
-                        )
-                    )
-                    // /cosmetics admin entitlements revoke pack|cosmetic <player(s)> <namespace:path>
-                    .then(Commands.literal("revoke")
-                        .then(Commands.literal("pack")
-                            .then(Commands.argument("player", EntityArgument.players())
-                                .then(Commands.argument("id", ResourceLocationArgument.id())
-                                    .executes(ctx -> {
-                                        ServerPlayer sender = ctx.getSource().getPlayerOrException();
-                                        if (!canUseAdmin(sender)) {
-                                            ctx.getSource().sendFailure(Component.literal("§cYou do not have permission to use admin commands."));
-                                            return 0;
-                                        }
-                                        Collection<ServerPlayer> targets = EntityArgument.getPlayers(ctx, "player");
-                                        ResourceLocation id = ResourceLocationArgument.getId(ctx, "id");
-                                        for (ServerPlayer target : targets) {
-                                            PlayerEntitlements.get(target).ifPresent(cap -> cap.revokePack(id));
-                                            CosmeticsLite.sendEntitlements(target);
-                                        }
-                                        ctx.getSource().sendSuccess(() -> Component.literal("§cRevoked pack " + id + " from " +
-                                                targets.stream().map(p -> p.getName().getString()).collect(Collectors.joining(", "))), true);
-                                        return 1;
-                                    })
-                                )
-                            )
-                        )
-                        .then(Commands.literal("cosmetic")
-                            .then(Commands.argument("player", EntityArgument.players())
-                                .then(Commands.argument("id", ResourceLocationArgument.id())
-                                    .executes(ctx -> {
-                                        ServerPlayer sender = ctx.getSource().getPlayerOrException();
-                                        if (!canUseAdmin(sender)) {
-                                            ctx.getSource().sendFailure(Component.literal("§cYou do not have permission to use admin commands."));
-                                            return 0;
-                                        }
-                                        Collection<ServerPlayer> targets = EntityArgument.getPlayers(ctx, "player");
-                                        ResourceLocation id = ResourceLocationArgument.getId(ctx, "id");
-                                        for (ServerPlayer target : targets) {
-                                            PlayerEntitlements.get(target).ifPresent(cap -> cap.revokeCosmetic(id));
-                                            CosmeticsLite.sendEntitlements(target);
-                                        }
-                                        ctx.getSource().sendSuccess(() -> Component.literal("§cRevoked cosmetic " + id + " from " +
-                                                targets.stream().map(p -> p.getName().getString()).collect(Collectors.joining(", "))), true);
-                                        return 1;
-                                    })
-                                )
-                            )
-                        )
-                    )
-                    // /cosmetics admin entitlements list <player>
-                    .then(Commands.literal("list")
-                        .then(Commands.argument("player", EntityArgument.player())
                             .executes(ctx -> {
                                 ServerPlayer sender = ctx.getSource().getPlayerOrException();
                                 if (!canUseAdmin(sender)) {
                                     ctx.getSource().sendFailure(Component.literal("§cYou do not have permission to use admin commands."));
                                     return 0;
                                 }
-                                ServerPlayer target = EntityArgument.getPlayer(ctx, "player");
-                                return listEntitlements(ctx.getSource(), target);
+
+                                Collection<ServerPlayer> targets = EntityArgument.getPlayers(ctx, "player");
+                                String token = StringArgumentType.getString(ctx, "token");
+
+                                boolean anySuccess = false;
+                                for (ServerPlayer target : targets) {
+                                    if (applyShortcutRevoke(target, token)) {
+                                        CosmeticsLite.sendEntitlements(target);
+                                        anySuccess = true;
+                                    }
+                                }
+
+                                if (!anySuccess) {
+                                    ctx.getSource().sendFailure(
+                                        Component.literal("§cUnknown entitlements token: " + token)
+                                    );
+                                    return 0;
+                                }
+
+                                String list = targets.stream()
+                                    .map(p -> p.getName().getString())
+                                    .collect(Collectors.joining(", "));
+                                ctx.getSource().sendSuccess(
+                                    () -> Component.literal("§cRevoked '" + token + "' from " + list),
+                                    true
+                                );
+                                return 1;
                             })
                         )
                     )
@@ -283,23 +269,31 @@ public class CosmeticCommand {
     }
 
     // -------------------------
-    // Entitlements helpers
+    // Token → entitlement mapping helpers
     // -------------------------
-    private static int listEntitlements(CommandSourceStack src, ServerPlayer target) {
+    private static boolean applyShortcutGrant(ServerPlayer target, String token) {
         return PlayerEntitlements.get(target).map(cap -> {
-            int p = cap.allPacks().size();
-            int c = cap.allCosmetics().size();
-            src.sendSuccess(() -> Component.literal("[CosLite] Entitlements for " + target.getGameProfile().getName() + ": packs=" + p + ", cosmetics=" + c), false);
+            switch (token) {
+                case "hats.fantasy" -> cap.grantPack(PACK_HATS_FANTASY);
+                case "hats.animals" -> cap.grantPack(PACK_HATS_ANIMALS);
+                case "hats.food"    -> cap.grantPack(PACK_HATS_FOOD);
+                case "minigames"    -> cap.grantPack(PACK_MINIGAMES);
+                default -> { return false; }
+            }
+            return true;
+        }).orElse(false);
+    }
 
-            String packs = cap.allPacks().stream().limit(10).collect(Collectors.joining(", "));
-            String cos = cap.allCosmetics().stream().limit(10).collect(Collectors.joining(", "));
-            if (!packs.isEmpty()) src.sendSuccess(() -> Component.literal(" packs: " + packs), false);
-            if (!cos.isEmpty()) src.sendSuccess(() -> Component.literal(" cosmetics: " + cos), false);
-            if (p > 10 || c > 10) src.sendSuccess(() -> Component.literal(" (…truncated…)"), false);
-            return 1;
-        }).orElseGet(() -> {
-            src.sendFailure(Component.literal("[CosLite] No entitlements capability present on target."));
-            return 0;
-        });
+    private static boolean applyShortcutRevoke(ServerPlayer target, String token) {
+        return PlayerEntitlements.get(target).map(cap -> {
+            switch (token) {
+                case "hats.fantasy" -> cap.revokePack(PACK_HATS_FANTASY);
+                case "hats.animals" -> cap.revokePack(PACK_HATS_ANIMALS);
+                case "hats.food"    -> cap.revokePack(PACK_HATS_FOOD);
+                case "minigames"    -> cap.revokePack(PACK_MINIGAMES);
+                default -> { return false; }
+            }
+            return true;
+        }).orElse(false);
     }
 }
