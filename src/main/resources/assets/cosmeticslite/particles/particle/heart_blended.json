@@ -1,0 +1,58 @@
+{
+  "id": "cosmeticslite:particle/heart_blended",
+  "layers": [
+    {
+      "movement": "FLOAT_UP",
+      "colors": ["#FF4E78", "#FF79A8"],
+      "lifespan": 45,
+      "spawn_interval": 2,
+      "size": 2,
+      "speed": 0.6,
+      "weight": 1.0
+    },
+    {
+      "movement": "SWIRL",
+      "colors": ["#FFFFFF", "#FFD1F0"],
+      "lifespan": 50,
+      "spawn_interval": 3,
+      "size": 1,
+      "speed": 0.9,
+      "weight": 0.7
+    },
+    {
+      "movement": "BURST",
+      "colors": ["#FF2E5F", "#FF99C2"],
+      "lifespan": 30,
+      "spawn_interval": 6,
+      "size": 1,
+      "speed": 1.4,
+      "weight": 1.3
+    }
+  ],
+  "world_layers": [
+    {
+      "effect": "minecraft:heart",
+      "style": "column",
+      "radius": 0.5,
+      "height_factor": 1.4,
+      "count": 10,
+      "speed_y": 0.05
+    },
+    {
+      "effect": "minecraft:soul_fire_flame",
+      "style": "halo",
+      "radius": 0.9,
+      "height_factor": 1.1,
+      "count": 8,
+      "speed_y": 0.02
+    },
+    {
+      "effect": "minecraft:enchanted_hit",
+      "style": "halo",
+      "radius": 0.7,
+      "height_factor": 1.3,
+      "count": 6,
+      "speed_y": 0.03
+    }
+  ]
+}

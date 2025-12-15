@@ -1,0 +1,27 @@
+{
+  "id": "cosmeticslite:particle/flame",
+  "layers": [
+    {
+      "movement": "BURST",
+      "colors": ["#FF4500", "#FF8C00", "#FFA500"],
+      "lifespan": 25,
+      "spawn_interval": 1,
+      "size": 2,
+      "speed": 2.0
+    },
+    {
+      "movement": "BUBBLE_POP",
+      "colors": ["#FF6347", "#FF0000"],
+      "lifespan": 30,
+      "spawn_interval": 3,
+      "size": 1,
+      "speed": 1.5
+    }
+  ],
+  "world": {
+    "style": "halo",
+    "radius": 0.6,
+    "height": 0.85
+  }
+}
+

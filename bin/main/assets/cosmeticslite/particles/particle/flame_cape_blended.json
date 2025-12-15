@@ -1,0 +1,54 @@
+{
+    "id": "cosmeticslite:particle/flame_cape_blended",
+    "layers": [
+        {
+            "movement": "FLOAT_UP",
+            "colors": [
+                "#FFB000",
+                "#FF4A00"
+            ],
+            "lifespan": 2,
+            "spawn_interval": 1,
+            "size": 0.38,
+            "speed": 0.05,
+            "weight": 2
+        }
+    ],
+    "world_layers": [
+        {
+            "effect": "minecraft:flame",
+            "style": "cape",
+            "radius": 0.28,
+            "height_factor": 1.05,
+            "count": 5
+        },
+        {
+            "effect": "minecraft:flame",
+            "style": "cape",
+            "radius": 0.32,
+            "height_factor": 0.95,
+            "count": 4
+        },
+        {
+            "effect": "minecraft:flame",
+            "style": "cape",
+            "radius": 0.38,
+            "height_factor": 0.82,
+            "count": 3
+        },
+        {
+            "effect": "minecraft:flame",
+            "style": "cape",
+            "radius": 0.45,
+            "height_factor": 0.68,
+            "count": 2
+        },
+        {
+            "effect": "minecraft:flame",
+            "style": "cape",
+            "radius": 0.52,
+            "height_factor": 0.56,
+            "count": 2
+        }
+    ]
+}

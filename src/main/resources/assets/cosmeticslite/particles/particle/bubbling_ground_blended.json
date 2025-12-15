@@ -1,0 +1,25 @@
+{
+  "id": "cosmeticslite:particle/bubbling_ground_blended",
+  "layers": [
+    {
+      "movement": "BUBBLE_POP",
+      "colors": ["#3BFF9C", "#00C66A"],
+      "lifespan": 25,
+      "spawn_interval": 2,
+      "size": 1,
+      "speed": 0.8,
+      "weight": 1.0
+    }
+  ],
+  "world_layers": [
+    {
+      "effect": "minecraft:campfire_cosy_smoke",
+      "style": "ground",
+      "radius": 0.9,
+      "height_factor": 0.5,
+      "count": 18,
+      "speed_y": 0.03
+    }
+  ]
+}
+

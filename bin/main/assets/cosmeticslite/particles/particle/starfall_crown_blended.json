@@ -1,0 +1,59 @@
+{
+  "id": "cosmeticslite:particle/starfall_crown_blended",
+  "layers": [
+    {
+      "movement": "BURST",
+      "colors": ["#FFF5CC", "#FFD966"],
+      "lifespan": 28,
+      "spawn_interval": 2,
+      "size": 1,
+      "speed": 1.5,
+      "weight": 1.2
+    },
+    {
+      "movement": "DRIFT_UP",
+      "colors": ["#FFFFFF", "#D0E8FF"],
+      "lifespan": 40,
+      "spawn_interval": 3,
+      "size": 1,
+      "speed": 0.5,
+      "weight": 1.0
+    },
+    {
+      "movement": "SWIRL",
+      "colors": ["#FFE680", "#FFFFFF"],
+      "lifespan": 35,
+      "spawn_interval": 4,
+      "size": 1,
+      "speed": 1.1,
+      "weight": 0.8
+    }
+  ],
+  "world_layers": [
+    {
+      "effect": "minecraft:end_rod",
+      "style": "halo",
+      "radius": 0.8,
+      "height_factor": 1.5,
+      "count": 10,
+      "speed_y": 0.03
+    },
+    {
+      "effect": "minecraft:enchanted_hit",
+      "style": "halo",
+      "radius": 0.9,
+      "height_factor": 1.3,
+      "count": 8,
+      "speed_y": 0.02
+    },
+    {
+      "effect": "minecraft:crit",
+      "style": "column",
+      "radius": 0.4,
+      "height_factor": 1.6,
+      "count": 6,
+      "speed_y": 0.04
+    }
+  ]
+}
+

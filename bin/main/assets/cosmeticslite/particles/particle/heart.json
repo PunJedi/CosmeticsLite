@@ -1,0 +1,27 @@
+{
+  "id": "cosmeticslite:particle/heart",
+  "layers": [
+    {
+      "movement": "FLOAT_UP",
+      "colors": ["#FF69B4", "#FF1493", "#FF6B9D"],
+      "lifespan": 40,
+      "spawn_interval": 2,
+      "size": 2,
+      "speed": 1.5
+    },
+    {
+      "movement": "SWIRL",
+      "colors": ["#FFB6C1", "#FFC0CB"],
+      "lifespan": 50,
+      "spawn_interval": 4,
+      "size": 1,
+      "speed": 1.2
+    }
+  ],
+  "world": {
+    "style": "halo",
+    "radius": 0.7,
+    "height": 0.9
+  }
+}
+
