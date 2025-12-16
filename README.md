@@ -35,3 +35,13 @@ Clone and build:
 git clone https://github.com/PunJedi/CosmeticsLite.git
 cd CosmeticsLite
 ./gradlew build
+```
+
+---
+
+## License
+
+All Rights Reserved.
+
+CosmeticsLite is the property of PunJedi. Redistribution or modification without
+explicit permission is not permitted.
