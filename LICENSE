@@ -2,17 +2,23 @@ Copyright (c) 2025 PunJedi
 
 All rights reserved.
 
-This software and associated files (the "Software") are provided for use only.
-No permission is granted to copy, modify, merge, publish, distribute, sublicense,
-or sell copies of the Software, in whole or in part, without explicit written
-permission from the copyright holder.
+This software and associated files (the "Software") are the exclusive property
+of the copyright holder.
 
-The Software may be used for personal and non-commercial purposes as distributed
-by the author.
+Permission is granted to download, install, and run the Software in its
+unmodified form for personal or server use.
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED,
-INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
-PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT
-HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
-OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
-SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+No permission is granted to copy, modify, merge, publish, distribute,
+sublicense, or sell the Software, in whole or in part, without explicit
+written permission from the copyright holder.
+
+Credits or acknowledgements present in source files or documentation do not
+confer ownership or licensing rights.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
