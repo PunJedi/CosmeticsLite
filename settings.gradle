@@ -1,0 +1,28 @@
+// settings.gradle — CosmeticsLite
+
+pluginManagement {
+    repositories {
+        gradlePluginPortal()
+        maven { url = "https://maven.minecraftforge.net" }
+        maven { url = "https://maven.parchmentmc.org" }
+        mavenCentral()
+    }
+}
+
+plugins {
+    id("org.gradle.toolchains.foojay-resolver-convention") version "0.7.0"
+}
+
+dependencyResolutionManagement {
+    // Enforce repositories declared here
+    repositoriesMode.set(RepositoriesMode.PREFER_PROJECT)
+    repositories {
+        maven { url = "https://maven.minecraftforge.net" }
+        maven { url = "https://maven.parchmentmc.org" }
+        mavenCentral()
+        gradlePluginPortal()
+    }
+}
+
+// Name shown in Gradle & the produced artifacts
+rootProject.name = "CosmeticsLite"

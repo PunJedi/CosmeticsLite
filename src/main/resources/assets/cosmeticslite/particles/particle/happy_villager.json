@@ -1,0 +1,27 @@
+{
+  "id": "cosmeticslite:particle/happy_villager",
+  "layers": [
+    {
+      "movement": "BOUNCE_UP",
+      "colors": ["#32CD32", "#00FF00", "#90EE90"],
+      "lifespan": 35,
+      "spawn_interval": 3,
+      "size": 2,
+      "speed": 1.2
+    },
+    {
+      "movement": "DRIFT_UP",
+      "colors": ["#98FB98", "#ADFF2F"],
+      "lifespan": 45,
+      "spawn_interval": 5,
+      "size": 1,
+      "speed": 0.8
+    }
+  ],
+  "world": {
+    "style": "column",
+    "radius": 0.4,
+    "height": 0.85
+  }
+}
+

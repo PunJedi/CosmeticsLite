@@ -1,0 +1,23 @@
+{
+  "confetti_pop": {
+    "subtitle": "cosmeticslite.subtitle.confetti_pop",
+    "sounds": [
+      { "name": "minecraft:entity.firework_rocket.blast", "volume": 0.9, "pitch": 1.0 },
+      { "name": "minecraft:entity.firework_rocket.twinkle", "volume": 0.6, "pitch": 1.2 }
+    ]
+  },
+  "bubble_pop": {
+    "subtitle": "cosmeticslite.subtitle.bubble_pop",
+    "sounds": [
+      { "name": "minecraft:block.bubble_column.upwards_inside", "volume": 0.7, "pitch": 1.15 },
+      { "name": "minecraft:block.bubble_column.whirlpool_inside", "volume": 0.5, "pitch": 1.05 }
+    ]
+  },
+  "gear_spark": {
+    "subtitle": "cosmeticslite.subtitle.gear_spark",
+    "sounds": [
+      { "name": "minecraft:block.anvil.land", "volume": 0.5, "pitch": 1.35 },
+      { "name": "minecraft:block.anvil.place", "volume": 0.45, "pitch": 1.50 }
+    ]
+  }
+}

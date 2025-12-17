@@ -1,0 +1,58 @@
+{
+  "id": "cosmeticslite:particle/happy_villager_blended",
+  "layers": [
+    {
+      "movement": "SWIRL",
+      "colors": ["#00FF55", "#00C944"],
+      "lifespan": 40,
+      "spawn_interval": 2,
+      "size": 1,
+      "speed": 1.1,
+      "weight": 1.0
+    },
+    {
+      "movement": "DRIFT_UP",
+      "colors": ["#B4FFD6", "#7CFFB4"],
+      "lifespan": 45,
+      "spawn_interval": 3,
+      "size": 1,
+      "speed": 0.5,
+      "weight": 0.8
+    },
+    {
+      "movement": "BURST",
+      "colors": ["#00FF88", "#FFFFFF"],
+      "lifespan": 25,
+      "spawn_interval": 5,
+      "size": 1,
+      "speed": 1.4,
+      "weight": 1.2
+    }
+  ],
+  "world_layers": [
+    {
+      "effect": "minecraft:happy_villager",
+      "style": "halo",
+      "radius": 0.9,
+      "height_factor": 1.0,
+      "count": 10,
+      "speed_y": 0.03
+    },
+    {
+      "effect": "minecraft:totem_of_undying",
+      "style": "column",
+      "radius": 0.6,
+      "height_factor": 1.4,
+      "count": 6,
+      "speed_y": 0.04
+    },
+    {
+      "effect": "minecraft:crit",
+      "style": "trail",
+      "radius": 0.7,
+      "height_factor": 0.7,
+      "count": 6,
+      "speed_y": 0.02
+    }
+  ]
+}

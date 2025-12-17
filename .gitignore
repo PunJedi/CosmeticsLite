@@ -1,0 +1,71 @@
+################################################################################
+# CosmeticsLite – Minecraft Forge Mod
+# Clean .gitignore for Gradle-based Forge 1.20.1 projects
+################################################################################
+
+# === Java ===
+*.class
+*.log
+hs_err_pid*
+replay_pid*
+
+# === Forge / Gradle ===
+.gradle/
+build/
+out/
+run/
+run-data/
+logs/
+!gradle/wrapper/gradle-wrapper.jar   # keep wrapper jar so others can build
+*.lock
+*.tmp
+*.bak
+*.swp
+
+# === Development Tools ===
+# IntelliJ IDEA
+.idea/
+*.iml
+*.iws
+out/
+
+# Eclipse
+.classpath
+.project
+.settings/
+
+# VS Code
+.vscode/
+
+# === Distribution Archives ===
+*.jar
+*.war
+*.nar
+*.ear
+*.zip
+*.tar.gz
+*.rar
+
+# === OS-Specific Junk ===
+.DS_Store
+Thumbs.db
+desktop.ini
+ehthumbs.db
+
+# === Misc Cache / Backups ===
+*.tmp
+*.bak
+*.old
+*.orig
+*.rej
+
+# === Forge User Data ===
+# Client-specific or runtime data folders that should not be tracked
+config/
+crash-reports/
+saves/
+screenshots/
+
+################################################################################
+# End of file
+################################################################################

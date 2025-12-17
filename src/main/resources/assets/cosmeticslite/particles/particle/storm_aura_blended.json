@@ -1,0 +1,59 @@
+{
+  "id": "cosmeticslite:particle/storm_aura_blended",
+  "layers": [
+    {
+      "movement": "SWIRL",
+      "colors": ["#B0E6FF", "#FFFFFF"],
+      "lifespan": 35,
+      "spawn_interval": 2,
+      "size": 1,
+      "speed": 1.3,
+      "weight": 1.0
+    },
+    {
+      "movement": "BURST",
+      "colors": ["#FFE680", "#FFFFFF"],
+      "lifespan": 20,
+      "spawn_interval": 4,
+      "size": 1,
+      "speed": 1.7,
+      "weight": 1.3
+    },
+    {
+      "movement": "FLOAT_UP",
+      "colors": ["#4A7AFF", "#9FB8FF"],
+      "lifespan": 40,
+      "spawn_interval": 3,
+      "size": 1,
+      "speed": 0.6,
+      "weight": 0.9
+    }
+  ],
+  "world_layers": [
+    {
+      "effect": "minecraft:enchant",
+      "style": "halo",
+      "radius": 0.9,
+      "height_factor": 1.0,
+      "count": 10,
+      "speed_y": 0.02
+    },
+    {
+      "effect": "minecraft:cloud",
+      "style": "column",
+      "radius": 0.7,
+      "height_factor": 1.6,
+      "count": 8,
+      "speed_y": 0.03
+    },
+    {
+      "effect": "minecraft:splash",
+      "style": "trail",
+      "radius": 0.6,
+      "height_factor": 0.7,
+      "count": 6,
+      "speed_y": 0.02
+    }
+  ]
+}
+

@@ -1,0 +1,59 @@
+{
+  "id": "cosmeticslite:particle/frost_aura_blended",
+  "layers": [
+    {
+      "movement": "SWIRL",
+      "colors": ["#E0F7FF", "#A8DFFF"],
+      "lifespan": 40,
+      "spawn_interval": 2,
+      "size": 1,
+      "speed": 1.0,
+      "weight": 1.0
+    },
+    {
+      "movement": "DRIFT_UP",
+      "colors": ["#FFFFFF", "#C0F0FF"],
+      "lifespan": 50,
+      "spawn_interval": 3,
+      "size": 1,
+      "speed": 0.4,
+      "weight": 0.8
+    },
+    {
+      "movement": "BURST",
+      "colors": ["#E0F7FF", "#FFFFFF"],
+      "lifespan": 25,
+      "spawn_interval": 6,
+      "size": 1,
+      "speed": 1.4,
+      "weight": 1.2
+    }
+  ],
+  "world_layers": [
+    {
+      "effect": "minecraft:cloud",
+      "style": "halo",
+      "radius": 0.9,
+      "height_factor": 1.0,
+      "count": 10,
+      "speed_y": 0.01
+    },
+    {
+      "effect": "minecraft:poof",
+      "style": "column",
+      "radius": 0.6,
+      "height_factor": 1.4,
+      "count": 8,
+      "speed_y": 0.03
+    },
+    {
+      "effect": "minecraft:end_rod",
+      "style": "halo",
+      "radius": 0.7,
+      "height_factor": 1.2,
+      "count": 6,
+      "speed_y": 0.02
+    }
+  ]
+}
+

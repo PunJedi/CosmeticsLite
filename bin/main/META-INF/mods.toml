@@ -1,0 +1,29 @@
+modLoader="javafml"
+loaderVersion="[47,)"                   # Forge 47.x for 1.20.1
+license="MIT"
+issueTrackerURL="https://github.com/PunJedi/CosmeticsLite/issues"
+displayURL="https://github.com/PunJedi/CosmeticsLite"
+
+[[mods]]
+modId="cosmeticslite"
+version="${mod_version}"
+displayName="CosmeticsLite"
+authors="Josh R. (PunJedi), Ava (Chatgpt)"
+description='''
+A lightweight cosmetics system for Pastlands. Provides hats, particles, and other visuals
+without affecting gameplay balance.
+'''
+
+[[dependencies.cosmeticslite]]
+modId="forge"
+mandatory=true
+versionRange="[47,)"
+ordering="NONE"
+side="BOTH"
+
+[[dependencies.cosmeticslite]]
+modId="minecraft"
+mandatory=true
+versionRange="[1.20.1,1.21)"
+ordering="NONE"
+side="BOTH"

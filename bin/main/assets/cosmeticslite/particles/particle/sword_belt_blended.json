@@ -1,0 +1,33 @@
+{
+  "id": "cosmeticslite:particle/sword_belt_blended",
+  "layers": [
+    {
+      "movement": "SWIRL",
+      "colors": ["#FFFFFF", "#A0E0FF"],
+      "lifespan": 30,
+      "spawn_interval": 2,
+      "size": 1,
+      "speed": 1.0,
+      "weight": 1.0
+    }
+  ],
+  "world_layers": [
+    {
+      "effect": "minecraft:sweep_attack",
+      "style": "belt",
+      "radius": 0.8,
+      "height_factor": 0.6,
+      "count": 12,
+      "speed_y": 0.0
+    },
+    {
+      "effect": "minecraft:crit",
+      "style": "belt",
+      "radius": 0.9,
+      "height_factor": 0.6,
+      "count": 16,
+      "speed_y": 0.01
+    }
+  ]
+}
+
