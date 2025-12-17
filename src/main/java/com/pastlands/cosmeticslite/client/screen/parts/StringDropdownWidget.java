@@ -29,6 +29,9 @@ public class StringDropdownWidget extends AbstractWidget {
     // Track expanded list bounds for mouse wheel scrolling
     private int listX, listY, listWidth, listHeight;
     private boolean listBoundsValid = false;
+    
+    // Optional tooltip provider: maps display string to tooltip text
+    private java.util.function.Function<String, String> tooltipProvider = null;
 
     public StringDropdownWidget(int x, int y, int width, int height,
                                List<String> initialOptions,
@@ -84,6 +87,14 @@ public class StringDropdownWidget extends AbstractWidget {
     public void setOnExpandedChanged(Runnable callback) {
         this.onExpandedChanged = callback;
     }
+    
+    /**
+     * Set a tooltip provider function that maps display strings to tooltip text.
+     * Used for showing full IDs or additional info when hovering over dropdown entries.
+     */
+    public void setTooltipProvider(java.util.function.Function<String, String> provider) {
+        this.tooltipProvider = provider;
+    }
 
     private int getExpandedHeight() { 
         int visibleCount = Math.min(options.size(), MAX_VISIBLE_ENTRIES);
@@ -108,10 +119,26 @@ public class StringDropdownWidget extends AbstractWidget {
 
         String text = options.isEmpty() ? "—" : getSelected();
         int color = options.isEmpty() ? 0xFFAAAAAA : 0xFFFFFFFF;
-        g.drawString(font, text, getX() + 4, getY() + (height - 8) / 2, color, false);
+        
+        // Truncate selected text if needed (leave space for arrow)
+        int padding = 4;
+        int arrowWidth = 10;
+        int maxTextWidth = width - padding * 2 - arrowWidth - 4;
+        String displayText = text;
+        if (font.width(text) > maxTextWidth) {
+            int ellipsisWidth = font.width("...");
+            int availableWidth = maxTextWidth - ellipsisWidth;
+            if (availableWidth > 0) {
+                displayText = font.plainSubstrByWidth(text, availableWidth) + "...";
+            } else {
+                displayText = "...";
+            }
+        }
+        
+        g.drawString(font, displayText, getX() + padding, getY() + (height - 8) / 2, color, false);
 
         g.drawString(font, expanded ? "▲" : "▼",
-                getX() + width - 10, getY() + (height - 8) / 2, 0xFFFFFFFF, false);
+                getX() + width - arrowWidth, getY() + (height - 8) / 2, 0xFFFFFFFF, false);
     }
 
     public void renderOnTop(GuiGraphics g, int mouseX, int mouseY, float pt) {
@@ -144,17 +171,65 @@ public class StringDropdownWidget extends AbstractWidget {
         fillRounded(g, dropX, dropY, dropX + dropW, dropY + dropH, 4, 0xFF202020);
 
         int optionY = dropY;
+        String hoveredTooltip = null;
+        int hoveredTooltipY = 0;
+        
         for (int i = 0; i < visibleCount; i++) {
             int absoluteIndex = start + i;
             if (absoluteIndex >= options.size()) break;
             
-            if (mouseX >= dropX && mouseX <= dropX + dropW &&
-                mouseY >= optionY && mouseY <= optionY + height) {
+            String optionText = options.get(absoluteIndex);
+            boolean isHovered = mouseX >= dropX && mouseX <= dropX + dropW &&
+                mouseY >= optionY && mouseY <= optionY + height;
+            
+            if (isHovered) {
                 g.fill(dropX, optionY, dropX + dropW, optionY + height, 0xFF444444);
+                // Get tooltip if provider is set
+                if (tooltipProvider != null) {
+                    hoveredTooltip = tooltipProvider.apply(optionText);
+                    hoveredTooltipY = optionY;
+                }
             }
-            g.drawString(font, options.get(absoluteIndex),
-                    dropX + 4, optionY + (height - 8) / 2, 0xFFFFFFFF, false);
+            
+            // Truncate text with ellipsis if needed
+            int padding = 4;
+            int maxTextWidth = dropW - padding * 2 - 4; // Leave some space for arrow/scrollbar
+            String displayText = optionText;
+            if (font.width(optionText) > maxTextWidth) {
+                // Calculate how much space we have for text (minus ellipsis)
+                int ellipsisWidth = font.width("...");
+                int availableWidth = maxTextWidth - ellipsisWidth;
+                if (availableWidth > 0) {
+                    displayText = font.plainSubstrByWidth(optionText, availableWidth) + "...";
+                } else {
+                    displayText = "..."; // Fallback if even ellipsis doesn't fit
+                }
+            }
+            
+            g.drawString(font, displayText,
+                    dropX + padding, optionY + (height - 8) / 2, 0xFFFFFFFF, false);
             optionY += height;
+        }
+        
+        // Render tooltip if hovering over an entry
+        if (hoveredTooltip != null && !hoveredTooltip.isEmpty()) {
+            int tooltipWidth = font.width(hoveredTooltip) + 6;
+            int tooltipHeight = font.lineHeight + 4;
+            
+            // Try to position tooltip to the right first, but fall back to left if needed
+            int tooltipX = dropX + dropW + 4;
+            int tooltipY = hoveredTooltipY;
+            
+            // Simple positioning: if tooltip would go off-screen to the right, position to the left
+            // (In a real implementation, you'd check against screen bounds, but this is a reasonable default)
+            // For now, we'll position to the right as that's the most common case
+            
+            // Draw tooltip background with border
+            g.fill(tooltipX, tooltipY, tooltipX + tooltipWidth, tooltipY + tooltipHeight, 0xFF000000);
+            g.fill(tooltipX + 1, tooltipY + 1, tooltipX + tooltipWidth - 1, tooltipY + tooltipHeight - 1, 0xFF404040);
+            
+            // Draw tooltip text
+            g.drawString(font, hoveredTooltip, tooltipX + 3, tooltipY + 2, 0xFFFFFFFF, false);
         }
 
         g.pose().popPose();

@@ -7,6 +7,7 @@ import com.pastlands.cosmeticslite.particle.config.ParticleLayerDefinition;
 import com.pastlands.cosmeticslite.particle.config.WorldLayerDefinition;
 import com.pastlands.cosmeticslite.particle.config.ParticlePreviewState;
 import com.pastlands.cosmeticslite.network.ParticleDefinitionChangePacket;
+import com.pastlands.cosmeticslite.util.ParticleIdUtil;
 import com.mojang.blaze3d.systems.RenderSystem;
 import net.minecraft.client.CameraType;
 import net.minecraft.client.gui.GuiGraphics;
@@ -253,6 +254,9 @@ public class ParticleLabScreen extends Screen {
     }
     
     private List<WorldLayerWidgets> worldLayerWidgets = new ArrayList<>();
+    
+    // Map from display string to ResourceLocation for Effect dropdown tooltips
+    private Map<String, ResourceLocation> effectDisplayToId = new java.util.HashMap<>();
     
     // Track header bounds for tooltips (populated during render, cleared each frame)
     private static class WorldLayerHeaderBounds {
@@ -1595,15 +1599,15 @@ public class ParticleLabScreen extends Screen {
 
             // Get all particle effects from registry (vanilla + modded), sorted alphabetically
             List<ResourceLocation> effectIds = getAllEffectIds();
-            List<String> effectOptions = effectIds.stream()
-                .map(id -> {
-                    // Strip "minecraft:" prefix for cleaner display
-                    if ("minecraft".equals(id.getNamespace())) {
-                        return id.getPath();
-                    }
-                    return id.toString();
-                })
-                .collect(Collectors.toList());
+            
+            // Build display strings and mapping for tooltips
+            effectDisplayToId.clear();
+            List<String> effectOptions = new ArrayList<>();
+            for (ResourceLocation id : effectIds) {
+                String display = formatEffectDisplay(id);
+                effectOptions.add(display);
+                effectDisplayToId.put(display, id);
+            }
             
 
         // Style options
@@ -1736,6 +1740,11 @@ public class ParticleLabScreen extends Screen {
             wlw.effectDropdown.setX(col1X);
             wlw.effectDropdown.setY(row1FieldY);
             wlw.effectDropdown.setWidth(wideWidth);
+            // Set tooltip provider to show full ResourceLocation on hover
+            wlw.effectDropdown.setTooltipProvider(display -> {
+                ResourceLocation id = effectDisplayToId.get(display);
+                return id != null ? id.toString() : display;
+            });
             
             // Set selected effect, safely handling case where it might not be in the registry
             ResourceLocation currentEffectId = worldLayer.effect();
@@ -3101,9 +3110,95 @@ public class ParticleLabScreen extends Screen {
         );
     }
     
+    /**
+     * Formats a ResourceLocation for display in the Effect dropdown.
+     * 
+     * Formatting rules:
+     * - If namespace == "minecraft": show path only (e.g., "happy_villager")
+     * - Else: show "path [namespace]" (e.g., "sparkle_burst [ars_nouveau]")
+     * 
+     * @param id The ResourceLocation to format
+     * @return The formatted display string
+     */
+    private String formatEffectDisplay(ResourceLocation id) {
+        if ("minecraft".equals(id.getNamespace())) {
+            return id.getPath();
+        }
+        return id.getPath() + " [" + id.getNamespace() + "]";
+    }
+    
+    /**
+     * Sanitizes a particle ResourceLocation by extracting and sanitizing the path segment.
+     * Extracts the part after "particle/" (if present), sanitizes it, and rebuilds the ID.
+     * 
+     * @param rawId The raw ResourceLocation to sanitize
+     * @return The sanitized ResourceLocation, or null if sanitization fails
+     */
+    @org.jetbrains.annotations.Nullable
+    private ResourceLocation sanitizeParticleId(ResourceLocation rawId) {
+        if (rawId == null) return null;
+        
+        String path = rawId.getPath();
+        String namePart;
+        
+        // Extract the part after "particle/" if present
+        if (path.startsWith("particle/")) {
+            namePart = path.substring("particle/".length());
+        } else {
+            // If no "particle/" prefix, use the whole path
+            namePart = path;
+        }
+        
+        // Sanitize the name part
+        String sanitized = ParticleIdUtil.sanitizePath(namePart);
+        if (sanitized == null) {
+            return null;
+        }
+        
+        // Rebuild ResourceLocation: cosmeticslite:particle/<sanitized>
+        return ResourceLocation.fromNamespaceAndPath(
+            CosmeticsLite.MODID,
+            "particle/" + sanitized
+        );
+    }
+    
     private void saveDefinition() {
         if (editorState.workingCopy == null) return;
         if (!editorState.dirty && !editorState.isNew) return;  // No changes
+        
+        // Sanitize particle ID at save time
+        ResourceLocation rawId = editorState.workingCopy.id();
+        ResourceLocation sanitizedId = sanitizeParticleId(rawId);
+        
+        if (sanitizedId == null) {
+            // Show validation error and abort save
+            if (this.minecraft.player != null) {
+                this.minecraft.player.sendSystemMessage(Component.literal("§cInvalid particle name"));
+            }
+            return;
+        }
+        
+        // If sanitized differs from raw, show non-blocking message
+        if (!sanitizedId.equals(rawId) && this.minecraft.player != null) {
+            this.minecraft.player.sendSystemMessage(Component.literal("§7Saved as: " + sanitizedId));
+        }
+        
+        // Create new ParticleDefinition with sanitized ID
+        ParticleDefinition sanitizedDef = new ParticleDefinition(
+            sanitizedId,
+            editorState.workingCopy.layers(),
+            editorState.workingCopy.worldLayers(),
+            editorState.workingCopy.description(),
+            editorState.workingCopy.styleHint(),
+            editorState.workingCopy.displayName(),
+            editorState.workingCopy.notes()
+        );
+        
+        // Update workingCopy and selectedId with sanitized version
+        editorState.workingCopy = sanitizedDef;
+        if (editorState.selectedId != null && editorState.selectedId.equals(rawId)) {
+            editorState.selectedId = sanitizedId;
+        }
         
         ParticleDefinitionChangePacket.ChangeType changeType = 
             editorState.isNew ? ParticleDefinitionChangePacket.ChangeType.CREATE 
@@ -3111,24 +3206,24 @@ public class ParticleLabScreen extends Screen {
         
         // Log before sending
         CosmeticsLite.LOGGER.info("[ParticleLab] Sending SAVE for {}: {} layer(s), {} world layer(s)",
-            editorState.workingCopy.id(), 
-            editorState.workingCopy.layers().size(), 
-            editorState.workingCopy.worldLayers().size());
+            sanitizedId, 
+            sanitizedDef.layers().size(), 
+            sanitizedDef.worldLayers().size());
         
         ParticleDefinitionChangePacket packet = new ParticleDefinitionChangePacket(
             changeType,
-            editorState.workingCopy.id(),
-            editorState.workingCopy
+            sanitizedId,
+            sanitizedDef
         );
         CosmeticsLite.NETWORK.sendToServer(packet);
         
         // Update editor's in-memory collection immediately (optimistic update)
         // Ensure both layers and worldLayers are included
-        editorDefinitions.put(editorState.workingCopy.id(), deepCopyDefinition(editorState.workingCopy));
+        editorDefinitions.put(sanitizedId, deepCopyDefinition(sanitizedDef));
         refreshDefinitionList();
         
         // Keep the saved definition selected after refresh
-        ResourceLocation savedId = editorState.workingCopy.id();
+        ResourceLocation savedId = sanitizedId;
         
         // Mark as saved (will be confirmed when sync packet arrives)
         editorState.markSaved();
@@ -3234,14 +3329,31 @@ public class ParticleLabScreen extends Screen {
             ParticlePreviewState.stopPreview();
             previewBtn.setMessage(Component.literal("Preview"));
         } else if (editorState.workingCopy != null && editorState.selectedId != null) {
+            // Sanitize particle ID at preview packet send time
+            ResourceLocation rawId = editorState.selectedId;
+            ResourceLocation sanitizedId = sanitizeParticleId(rawId);
+            
+            if (sanitizedId == null) {
+                // Show validation error and abort preview
+                if (this.minecraft.player != null) {
+                    this.minecraft.player.sendSystemMessage(Component.literal("§cInvalid particle name"));
+                }
+                return;
+            }
+            
+            // If sanitized differs from raw, show non-blocking message
+            if (!sanitizedId.equals(rawId) && this.minecraft.player != null) {
+                this.minecraft.player.sendSystemMessage(Component.literal("§7Previewing as: " + sanitizedId));
+            }
+            
             // Start preview with workingCopy (unsaved values) - send packet to server
-            CosmeticsLite.LOGGER.info("[ParticleLab] Starting preview for: {} (with unsaved workingCopy)", editorState.selectedId);
+            CosmeticsLite.LOGGER.info("[ParticleLab] Starting preview for: {} (with unsaved workingCopy)", sanitizedId);
             com.pastlands.cosmeticslite.network.ParticlePreviewPacket startPacket = 
-                new com.pastlands.cosmeticslite.network.ParticlePreviewPacket(true, editorState.selectedId);
+                new com.pastlands.cosmeticslite.network.ParticlePreviewPacket(true, sanitizedId);
             CosmeticsLite.NETWORK.sendToServer(startPacket);
             // Set local preview state with workingCopy (unsaved values)
-            ParticlePreviewState.startPreview(editorState.selectedId, editorState.workingCopy);
-            ParticlePreviewState.setPreviewOverride(editorState.selectedId, editorState.workingCopy);
+            ParticlePreviewState.startPreview(sanitizedId, editorState.workingCopy);
+            ParticlePreviewState.setPreviewOverride(sanitizedId, editorState.workingCopy);
             previewBtn.setMessage(Component.literal("Stop Preview"));
         }
     }
@@ -3271,9 +3383,26 @@ public class ParticleLabScreen extends Screen {
             // will use the latest saved definition when publishing.
         }
         
+        // Sanitize particle ID at publish time
+        ResourceLocation rawId = editorState.selectedId;
+        ResourceLocation sanitizedId = sanitizeParticleId(rawId);
+        
+        if (sanitizedId == null) {
+            // Show validation error and abort publish
+            if (this.minecraft.player != null) {
+                this.minecraft.player.sendSystemMessage(Component.literal("§cInvalid particle name"));
+            }
+            return;
+        }
+        
+        // If sanitized differs from raw, show non-blocking message
+        if (!sanitizedId.equals(rawId) && this.minecraft.player != null) {
+            this.minecraft.player.sendSystemMessage(Component.literal("§7Published as: " + sanitizedId));
+        }
+        
         // Generate cosmetic ID from particle ID
         // e.g. cosmeticslite:particle/angel_wisps_blended -> cosmeticslite:cosmetic/angel_wisps_blended
-        ResourceLocation particleId = editorState.selectedId;
+        ResourceLocation particleId = sanitizedId;
         
         // Extract primary color from first GUI layer for optional tint
         Integer argbTint = null;
@@ -3691,10 +3820,31 @@ public class ParticleLabScreen extends Screen {
             int bgColor = selected ? 0xFF3A4A5E : (hovered ? 0xFF3A3A3E : 0xFF2A2A2E);
             gfx.fill(listLeft, itemY, listRight, itemY + itemHeight, bgColor);
             
-            // Show short ID (path only) instead of full ID
-            String shortId = id.getPath(); // e.g., "test1", "flame_blended"
+            // Show truncated path with ellipsis, and namespace in dim color on right
+            String path = id.getPath(); // e.g., "particle/test1", "particle/flame_blended"
+            String namespace = id.getNamespace(); // e.g., "cosmeticslite", "minecraft"
+            
             int textColor = selected ? 0xFFFFFF : 0xCCCCCC; // White for selected, gray for inactive
-            gfx.drawString(this.font, shortId, listLeft + 8, itemY + itemPadding + 4, textColor, false);
+            int namespaceColor = selected ? 0xFF888888 : 0xFF666666; // Dim color for namespace
+            
+            // Calculate available width (leave space for namespace on right)
+            int availableWidth = listRight - listLeft - 16; // 8px padding on each side
+            String namespaceText = " [" + namespace + "]";
+            int namespaceWidth = this.font.width(namespaceText);
+            int pathMaxWidth = availableWidth - namespaceWidth - 4; // 4px gap between path and namespace
+            
+            // Truncate path if needed
+            String displayPath = path;
+            if (this.font.width(path) > pathMaxWidth) {
+                displayPath = this.font.plainSubstrByWidth(path, pathMaxWidth - this.font.width("...")) + "...";
+            }
+            
+            // Draw path on left
+            gfx.drawString(this.font, displayPath, listLeft + 8, itemY + itemPadding + 4, textColor, false);
+            
+            // Draw namespace on right in dim color
+            int namespaceX = listRight - namespaceWidth - 8;
+            gfx.drawString(this.font, namespaceText, namespaceX, itemY + itemPadding + 4, namespaceColor, false);
         }
     }
     
