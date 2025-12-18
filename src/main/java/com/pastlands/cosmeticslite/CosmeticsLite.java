@@ -219,6 +219,14 @@ public CosmeticsLite() {
                 com.pastlands.cosmeticslite.network.OpenMiniGameHubResponsePacket::handle,
                 Optional.of(NetworkDirection.PLAY_TO_CLIENT)
         );
+        // 🔹 Cosmetic particle emit (server -> client)
+        NETWORK.registerMessage(
+                id(), com.pastlands.cosmeticslite.network.S2CCosmeticParticleEmit.class,
+                com.pastlands.cosmeticslite.network.S2CCosmeticParticleEmit::encode,
+                com.pastlands.cosmeticslite.network.S2CCosmeticParticleEmit::decode,
+                com.pastlands.cosmeticslite.network.S2CCosmeticParticleEmit::handle,
+                Optional.of(NetworkDirection.PLAY_TO_CLIENT)
+        );
 
     }
 

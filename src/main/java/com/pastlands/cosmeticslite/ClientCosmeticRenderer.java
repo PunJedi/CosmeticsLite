@@ -269,12 +269,13 @@ public final class ClientCosmeticRenderer {
         ParticleOptions particle = resolveParticle(effectId);
         if (particle == null) return;
 
-        // Default behavior: 2 particles near upper body
+        // Default behavior: 2 particles near body center
+        // Use consistent anchor point (body-center at 0.6) to match shared spawner
         if (tickCounter % 6 != 0) return;
 
         RandomSource r = player.getRandom();
         double baseX = player.getX();
-        double baseY = player.getY() + player.getBbHeight() * 0.85;
+        double baseY = player.getY() + player.getBbHeight() * com.pastlands.cosmeticslite.particle.SharedParticleSpawner.BODY_CENTER_HEIGHT_FACTOR;
         double baseZ = player.getZ();
         int count = 2;
         for (int i = 0; i < count; i++) {
@@ -337,11 +338,12 @@ public final class ClientCosmeticRenderer {
         ParticleOptions particle = resolveParticle(effectId);
         if (particle == null) return;
         
-        // Classic simple pattern: 2 particles near upper body, every 6 ticks
+        // Classic simple pattern: 2 particles near body center, every 6 ticks
+        // Use consistent anchor point (body-center at 0.6) to match shared spawner
         if (tickCounter % 6 != 0) return;
         
         double baseX = player.getX();
-        double baseY = player.getY() + player.getBbHeight() * 0.85;
+        double baseY = player.getY() + player.getBbHeight() * com.pastlands.cosmeticslite.particle.SharedParticleSpawner.BODY_CENTER_HEIGHT_FACTOR;
         double baseZ = player.getZ();
         int count = 2;
         
