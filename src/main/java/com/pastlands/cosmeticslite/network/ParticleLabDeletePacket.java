@@ -60,9 +60,9 @@ public final class ParticleLabDeletePacket {
             ServerPlayer player = ctx.get().getSender();
             if (player == null) return;
 
-            // Permission check
-            if (!CosmeticsPermissions.canUseFeature(player, com.pastlands.cosmeticslite.permission.CosmeticsFeature.PARTICLE_LAB)) {
-                player.sendSystemMessage(Component.literal("§cYou don't have permission to delete particles."));
+            // Permission check: Particle Lab requires staff/override/OP
+            if (!CosmeticsPermissions.canUseParticleLab(player)) {
+                player.sendSystemMessage(Component.literal("§cYou do not have permission to use Particle Lab."));
                 return;
             }
 

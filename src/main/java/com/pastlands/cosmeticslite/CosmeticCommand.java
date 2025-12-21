@@ -309,17 +309,8 @@ public class CosmeticCommand {
     // Permission helpers (safe, never throw)
     // -------------------------
     private static boolean canOpenMenu(ServerPlayer player) {
-        try {
-            // Primary: permission node
-            if (PermissionAPI.getPermission(player, CosmeticsLite.PERM_MENU)) {
-                return true;
-            }
-            // Fallback: allow if they’re unlocked already or are OPs
-            return hasAccess(player) || player.hasPermissions(2);
-        } catch (Throwable t) {
-            // Any backend error → fallback path
-            return hasAccess(player) || player.hasPermissions(2);
-        }
+        // Use the real permission system which checks for any cosmetics permission
+        return com.pastlands.cosmeticslite.permission.CosmeticsPermissions.canOpenMenu(player);
     }
 
     private static boolean canUseAdmin(ServerPlayer player) {

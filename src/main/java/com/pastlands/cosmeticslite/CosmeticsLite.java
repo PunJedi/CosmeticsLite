@@ -28,13 +28,11 @@ import net.minecraftforge.network.NetworkDirection;
 import net.minecraftforge.network.NetworkRegistry;
 import net.minecraftforge.network.PacketDistributor;
 import net.minecraftforge.network.simple.SimpleChannel;
+import com.pastlands.cosmeticslite.permission.CosmeticsPermissionNodes;
 import net.minecraftforge.server.permission.nodes.PermissionNode;
-import net.minecraftforge.server.permission.nodes.PermissionTypes;
 import org.slf4j.Logger;
 
 import java.util.Collections;
-import java.util.HashMap;
-import java.util.Map;
 
 /** Mod entrypoint. */
 @Mod(CosmeticsLite.MODID)
@@ -61,13 +59,9 @@ public class CosmeticsLite {
     private static int id() { return NEXT_ID++; }
 
     // ---- Permissions ----
-    public static final PermissionNode<Boolean> PERM_MENU =
-            new PermissionNode<>(MODID, "menu", PermissionTypes.BOOLEAN,
-                    (player, uuid, ctx) -> true); // default: allow all
-
-    public static final PermissionNode<Boolean> PERM_ADMIN =
-            new PermissionNode<>(MODID, "admin", PermissionTypes.BOOLEAN,
-                    (player, uuid, ctx) -> player.hasPermissions(2)); // default: OPs only
+    // Use registered nodes from CosmeticsPermissionNodes
+    public static final PermissionNode<Boolean> PERM_MENU = CosmeticsPermissionNodes.MENU;
+    public static final PermissionNode<Boolean> PERM_ADMIN = CosmeticsPermissionNodes.ADMIN;
 
 @SuppressWarnings("removal")
 public CosmeticsLite() {
@@ -217,6 +211,22 @@ public CosmeticsLite() {
                 com.pastlands.cosmeticslite.network.OpenMiniGameHubResponsePacket::encode,
                 com.pastlands.cosmeticslite.network.OpenMiniGameHubResponsePacket::decode,
                 com.pastlands.cosmeticslite.network.OpenMiniGameHubResponsePacket::handle,
+                Optional.of(NetworkDirection.PLAY_TO_CLIENT)
+        );
+        // 🔹 Particle Lab access request (client -> server)
+        NETWORK.registerMessage(
+                id(), com.pastlands.cosmeticslite.network.OpenParticleLabPacket.class,
+                com.pastlands.cosmeticslite.network.OpenParticleLabPacket::encode,
+                com.pastlands.cosmeticslite.network.OpenParticleLabPacket::decode,
+                com.pastlands.cosmeticslite.network.OpenParticleLabPacket::handle,
+                Optional.of(NetworkDirection.PLAY_TO_SERVER)
+        );
+        // 🔹 Particle Lab access granted (server -> client)
+        NETWORK.registerMessage(
+                id(), com.pastlands.cosmeticslite.network.OpenParticleLabResponsePacket.class,
+                com.pastlands.cosmeticslite.network.OpenParticleLabResponsePacket::encode,
+                com.pastlands.cosmeticslite.network.OpenParticleLabResponsePacket::decode,
+                com.pastlands.cosmeticslite.network.OpenParticleLabResponsePacket::handle,
                 Optional.of(NetworkDirection.PLAY_TO_CLIENT)
         );
         // 🔹 Cosmetic particle emit (server -> client)
