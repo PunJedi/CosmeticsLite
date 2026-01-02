@@ -33,6 +33,7 @@ import net.minecraftforge.event.entity.player.PlayerEvent;
 import net.minecraftforge.event.entity.player.PlayerInteractEvent;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
 import net.minecraftforge.fml.common.Mod;
+import org.jetbrains.annotations.Nullable;
 import org.slf4j.Logger;
 
 import java.lang.reflect.Method;
@@ -73,8 +74,11 @@ public class PetManager {
     /** Presence re-check cadence. */
     private static final int PRESENCE_CHECK_PERIOD = 40; // 2s
 
-    /** Interaction cooldown for “petting” w/ empty hand (blocks shears/buckets/etc.). */
+    /** Interaction cooldown for "petting" w/ empty hand (blocks shears/buckets/etc.). */
     private static final int INTERACT_COOLDOWN_TICKS = 20 * 3; // 3s
+
+    /** Stale pet cleanup: timeout in ticks (5 minutes = 6000 ticks). */
+    private static final int STALE_PET_TIMEOUT_TICKS = 20 * 60 * 5; // 5 minutes
 
 private static String normalizeVillagerTypeKey(String key) {
     if (key == null || key.isBlank()) return "minecraft:plains";
@@ -148,6 +152,9 @@ private static String normalizeVillagerTypeKey(String key) {
                 && LOGIN_WARMUP.getOrDefault(pid, 0) > 0) {
             cleanupStrayVanillaHorses(server, player);
         }
+
+        // Clean up any duplicate pets before adopting or spawning
+        cleanupDuplicateOwnedCosmeticPets(player, desiredId, 64.0D);
 
         // 1) Adopt-if-present: if a correct owned cosmetic entity exists nearby, adopt it
         Entity nearbyOwned = findNearbyOwnedCosmetic(server, player, desiredId);
@@ -232,6 +239,9 @@ private static String normalizeVillagerTypeKey(String key) {
 
             applyCosmeticSafety(pet);
             applySavedStyleFromPlayer(player, pet); // authoritative style push before add
+
+            // Hard-prevent double-spawn by cleaning before adding entity
+            cleanupDuplicateOwnedCosmeticPets(player, petId, 64.0D);
 
             if (level.addFreshEntity(pet)) {
                 ACTIVE_PETS.put(player.getUUID(), pet);
@@ -386,15 +396,108 @@ private static String normalizeVillagerTypeKey(String key) {
     @SubscribeEvent
     public static void onServerTick(TickEvent.ServerTickEvent e) {
         if (e.phase != TickEvent.Phase.END) return;
+        
+        // Teleport distance threshold
+        final double TELEPORT_DIST = 48.0;
+        
         for (Entity ent : ACTIVE_PETS.values()) {
             if (!(ent instanceof LivingEntity le) || le.isRemoved()) continue;
 
+            // Blaze-specific: heal if wet
             if (le instanceof Blaze && le.isInWaterOrRain()) {
                 le.setHealth(le.getMaxHealth());
                 le.clearFire();
             }
+            
+            // De-aggro maintenance: clear aggression regularly (every 30 ticks)
+            if (ent.tickCount % 30 == 0 && ent instanceof Mob mob) {
+                // Clear target
+                mob.setTarget(null);
+                
+                // Stop navigation if not actively following
+                if (mob.getNavigation().isDone()) {
+                    mob.getNavigation().stop();
+                }
+                
+                // Clear revenge memory
+                mob.setLastHurtByMob(null);
+            }
+            
+            // Strip combat goals periodically (every 40 ticks)
             if (ent.tickCount % 40 == 0 && ent instanceof Mob mob) {
                 stripCombatGoals(mob);
+            }
+            
+            // Leash/teleport maintenance: check distance from owner (every 20 ticks)
+            if (ent.tickCount % 20 == 0) {
+                CompoundTag tag = ent.getPersistentData().getCompound(ENBT_ROOT);
+                if (tag.hasUUID(ENBT_OWNER)) {
+                    UUID ownerId = tag.getUUID(ENBT_OWNER);
+                    
+                    // Try to find owner in the same dimension
+                    ServerPlayer owner = null;
+                    if (ent.level() instanceof ServerLevel serverLevel) {
+                        owner = serverLevel.getServer().getPlayerList().getPlayer(ownerId);
+                    }
+                    
+                    if (owner != null && !owner.isRemoved()) {
+                        // Owner exists and is online
+                        if (owner.level() == ent.level()) {
+                            // Same dimension - check distance
+                            double distance = ent.distanceTo(owner);
+                            
+                            if (distance > TELEPORT_DIST) {
+                                // Too far - teleport near owner
+                                Vec3 safePos = findSafeSpawnPosition((ServerLevel) ent.level(), owner.position());
+                                ent.teleportTo(safePos.x, safePos.y, safePos.z);
+                                
+                                if (ent instanceof Mob mob) {
+                                    mob.getNavigation().stop();
+                                }
+                            }
+                        } else {
+                            // Different dimension - pet should not exist there
+                            // Optionally despawn or do nothing (safe if pets are non-hostile)
+                            // For now, we'll just stop navigation
+                            if (ent instanceof Mob mob) {
+                                mob.getNavigation().stop();
+                                mob.setTarget(null);
+                            }
+                        }
+                    } else {
+                        // Owner missing/offline - stop navigation and clear target
+                        // Pet will remain but won't roam
+                        if (ent instanceof Mob mob) {
+                            mob.getNavigation().stop();
+                            mob.setTarget(null);
+                        }
+                        
+                        // Optional: Clean up stale pets whose owner has been offline for too long
+                        // Check every 200 ticks (~10 seconds) to avoid excessive checks
+                        if (ent.tickCount % 200 == 0) {
+                            // Check if owner is truly offline (not just in different dimension)
+                            boolean ownerOnline = false;
+                            if (ent.level() instanceof ServerLevel serverLevel) {
+                                ServerPlayer onlineOwner = serverLevel.getServer().getPlayerList().getPlayer(ownerId);
+                                ownerOnline = (onlineOwner != null && !onlineOwner.isRemoved());
+                            }
+                            
+                            if (!ownerOnline) {
+                                // Owner is offline - check if pet has been abandoned for too long
+                                // Only check pets that aren't in ACTIVE_PETS (orphaned pets)
+                                if (!ACTIVE_PETS.containsValue(ent)) {
+                                    // This pet is not actively tracked - it's orphaned
+                                    // Remove it after timeout to prevent abandoned invulnerable pets
+                                    if (ent.tickCount > STALE_PET_TIMEOUT_TICKS) {
+                                        LOGGER.info("[PetManager] Removing stale cosmetic pet {} (owner offline for >{} minutes)", 
+                                                ent.getClass().getSimpleName(), STALE_PET_TIMEOUT_TICKS / (20 * 60));
+                                        ent.discard();
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
     }
@@ -1065,6 +1168,97 @@ if (pet instanceof net.minecraft.world.entity.npc.Villager villager) {
             if (isCorrectPetType(e, desiredId)) return e;
         }
         return null;
+    }
+
+    /**
+     * Find all owned cosmetic pets near a player.
+     * @param owner The owner player
+     * @param radius Search radius
+     * @return List of Mob entities that are cosmetic pets owned by this player
+     */
+    private static List<Mob> findOwnedCosmeticPetsNear(ServerPlayer owner, double radius) {
+        if (!(owner.level() instanceof ServerLevel level)) {
+            return new ArrayList<>();
+        }
+        
+        AABB box = new AABB(owner.getX() - radius, owner.getY() - 4, owner.getZ() - radius,
+                            owner.getX() + radius, owner.getY() + 4, owner.getZ() + radius);
+        List<Entity> found = level.getEntities((Entity)null, box, PetManager::isCosmeticPet);
+        UUID want = owner.getUUID();
+        List<Mob> result = new ArrayList<>();
+        
+        for (Entity e : found) {
+            if (!(e instanceof Mob mob)) continue;
+            CompoundTag tag = e.getPersistentData().getCompound(ENBT_ROOT);
+            if (!tag.hasUUID(ENBT_OWNER)) continue;
+            if (!want.equals(tag.getUUID(ENBT_OWNER))) continue;
+            result.add(mob);
+        }
+        
+        return result;
+    }
+
+    /**
+     * Clean up duplicate owned cosmetic pets, keeping only one.
+     * Prefers a pet matching desiredPetId, then closest to owner.
+     * 
+     * @param owner The owner player
+     * @param desiredPetId Optional desired pet type (null = any)
+     * @param radius Search radius
+     */
+    private static void cleanupDuplicateOwnedCosmeticPets(ServerPlayer owner, @Nullable ResourceLocation desiredPetId, double radius) {
+        List<Mob> pets = findOwnedCosmeticPetsNear(owner, radius);
+        
+        if (pets.size() <= 1) {
+            return; // No duplicates
+        }
+        
+        // Choose one to keep
+        Mob toKeep = null;
+        double closestDist = Double.MAX_VALUE;
+        
+        // First pass: prefer matching desiredPetId
+        if (desiredPetId != null) {
+            for (Mob pet : pets) {
+                if (isCorrectPetType(pet, desiredPetId)) {
+                    double dist = pet.distanceTo(owner);
+                    if (dist < closestDist) {
+                        toKeep = pet;
+                        closestDist = dist;
+                    }
+                }
+            }
+        }
+        
+        // Second pass: if no match or desiredPetId was null, keep closest overall
+        if (toKeep == null) {
+            closestDist = Double.MAX_VALUE;
+            for (Mob pet : pets) {
+                double dist = pet.distanceTo(owner);
+                if (dist < closestDist) {
+                    toKeep = pet;
+                    closestDist = dist;
+                }
+            }
+        }
+        
+        // Remove all others
+        int removed = 0;
+        Map<String, Integer> typeCounts = new HashMap<>();
+        
+        for (Mob pet : pets) {
+            if (pet != toKeep && !pet.isRemoved()) {
+                String typeName = pet.getClass().getSimpleName();
+                typeCounts.put(typeName, typeCounts.getOrDefault(typeName, 0) + 1);
+                pet.discard();
+                removed++;
+            }
+        }
+        
+        if (removed > 0) {
+            LOGGER.info("[PetManager] Cleaned up {} duplicate cosmetic pet(s) for {}: {}", 
+                    removed, owner.getGameProfile().getName(), typeCounts);
+        }
     }
 
     /* ------------------------------ legacy flags --------------------------- */
