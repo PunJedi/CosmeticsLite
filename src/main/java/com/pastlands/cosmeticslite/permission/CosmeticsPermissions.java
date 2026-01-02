@@ -7,11 +7,9 @@ import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraftforge.server.permission.PermissionAPI;
 import net.minecraftforge.server.permission.nodes.PermissionNode;
-import net.minecraftforge.server.permission.nodes.PermissionTypes;
 
 import java.util.EnumSet;
 import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
 
 public final class CosmeticsPermissions {
 
@@ -38,9 +36,6 @@ public final class CosmeticsPermissions {
     public static final String NODE_STAFF           = "cosmeticslite.staff";
     public static final String NODE_PARTICLE_LAB    = "cosmeticslite.particlelab"; // explicit override, if desired
 
-    // Cache for PermissionNode instances to avoid recreating them
-    private static final ConcurrentHashMap<String, PermissionNode<Boolean>> NODE_CACHE = new ConcurrentHashMap<>();
-
     private CosmeticsPermissions() {
     }
 
@@ -57,22 +52,28 @@ public final class CosmeticsPermissions {
             return false;
         }
 
-        // 1. Bypass / staff / op: full access
-        if (hasNode(player, NODE_BYPASS) || hasNode(player, NODE_STAFF) || isOp(player)) {
-            return true;
-        }
-
-        // 2. Special rules for Particle Lab (staff / op only)
+        // 1. Special rules for Particle Lab (staff / op / override ONLY - checked BEFORE everything else)
+        // This ensures Particle Lab is NEVER granted by ranks or feature nodes
         if (feature == CosmeticsFeature.PARTICLE_LAB) {
             return canUseParticleLabInternal(player);
         }
 
+        // 2. Bypass / staff / op: full access (for all other features)
+        if (has(player, CosmeticsPermissionNodes.BYPASS) || 
+            has(player, CosmeticsPermissionNodes.STAFF) || 
+            isOp(player)) {
+            return true;
+        }
+
         // 3. Direct feature node (server owners can override matrix via perms)
-        if (hasNode(player, featureToNode(feature))) {
+        // NOTE: FEATURE_PARTICLE_LAB node is intentionally ignored - Particle Lab requires staff/override/OP
+        PermissionNode<Boolean> featureNode = featureToNode(feature);
+        if (featureNode != null && has(player, featureNode)) {
             return true;
         }
 
         // 4. Rank-based mapping (VIP, VIP+, MVP, MVP+)
+        // NOTE: Rank matrix does NOT include PARTICLE_LAB - it's staff-only
         Set<CosmeticsFeature> rankFeatures = getFeaturesGrantedByHighestRank(player);
         if (rankFeatures.contains(feature)) {
             return true;
@@ -94,6 +95,69 @@ public final class CosmeticsPermissions {
      */
     public static boolean canUseParticleLab(ServerPlayer player) {
         return canOpenParticleLab(player);
+    }
+
+    /**
+     * Check if a player can open the cosmetics menu.
+     * Allows access if:
+     * - Player is OP, has bypass, or has staff permission
+     * - Player has explicit menu permission
+     * - Player has any rank node (VIP, VIP+, MVP, MVP+)
+     * - Player has any feature node
+     * - Player has legacy unlock tag (backward compatibility)
+     */
+    public static boolean canOpenMenu(ServerPlayer player) {
+        if (player == null) {
+            return false;
+        }
+
+        // 1. Bypass / staff / op: full access
+        if (has(player, CosmeticsPermissionNodes.BYPASS) || 
+            has(player, CosmeticsPermissionNodes.STAFF) || 
+            isOp(player)) {
+            return true;
+        }
+
+        // 2. Explicit menu permission
+        if (has(player, CosmeticsPermissionNodes.MENU)) {
+            return true;
+        }
+
+        // 3. Any rank node
+        if (has(player, CosmeticsPermissionNodes.RANK_VIP) ||
+            has(player, CosmeticsPermissionNodes.RANK_VIP_PLUS) ||
+            has(player, CosmeticsPermissionNodes.RANK_MVP) ||
+            has(player, CosmeticsPermissionNodes.RANK_MVP_PLUS)) {
+            return true;
+        }
+
+        // 4. Any feature node (excluding PARTICLE_LAB - that requires staff/override/OP)
+        if (has(player, CosmeticsPermissionNodes.FEATURE_BASE_PARTICLES) ||
+            has(player, CosmeticsPermissionNodes.FEATURE_BASE_HATS) ||
+            has(player, CosmeticsPermissionNodes.FEATURE_CAPES) ||
+            has(player, CosmeticsPermissionNodes.FEATURE_BLENDED_PARTICLES) ||
+            has(player, CosmeticsPermissionNodes.FEATURE_CUSTOM_HATS) ||
+            has(player, CosmeticsPermissionNodes.FEATURE_PETS) ||
+            has(player, CosmeticsPermissionNodes.FEATURE_MINI_GAMES)) {
+            return true;
+        }
+
+        // 5. Legacy unlock tag (backward compatibility)
+        // Check if player has the legacy unlock tag
+        if (hasLegacyUnlock(player)) {
+            return true;
+        }
+
+        // 6. Default: no access
+        return false;
+    }
+
+    /**
+     * Check if player has legacy unlock tag (backward compatibility).
+     */
+    private static boolean hasLegacyUnlock(ServerPlayer player) {
+        if (player == null) return false;
+        return player.getPersistentData().getBoolean("cosmeticslite_unlocked");
     }
 
     /**
@@ -155,13 +219,34 @@ public final class CosmeticsPermissions {
     //  Internal helpers
     // ---------------------------------------------------
 
+    /**
+     * Internal check for Particle Lab access.
+     * Particle Lab is staff-only and cannot be granted by:
+     * - Ranks (VIP, MVP, etc.)
+     * - Feature nodes (cosmeticslite.feature.particle_lab)
+     * - Generic menu access
+     * 
+     * Only allows:
+     * - cosmeticslite.bypass (full access)
+     * - cosmeticslite.particlelab (explicit override)
+     * - cosmeticslite.staff
+     * - OP (permission level 2+)
+     */
     private static boolean canUseParticleLabInternal(ServerPlayer player) {
-        // Staff / op / explicit node
-        if (hasNode(player, NODE_PARTICLE_LAB)) {
+        if (player == null) {
+            return false;
+        }
+
+        // Check in order: bypass, explicit override, staff, OP
+        if (has(player, CosmeticsPermissionNodes.BYPASS)) {
             return true;
         }
 
-        if (hasNode(player, NODE_STAFF)) {
+        if (has(player, CosmeticsPermissionNodes.PARTICLELAB_OVERRIDE)) {
+            return true;
+        }
+
+        if (has(player, CosmeticsPermissionNodes.STAFF)) {
             return true;
         }
 
@@ -169,19 +254,20 @@ public final class CosmeticsPermissions {
             return true;
         }
 
+        // No other paths - ranks and feature nodes are intentionally excluded
         return false;
     }
 
-    private static String featureToNode(CosmeticsFeature feature) {
+    private static PermissionNode<Boolean> featureToNode(CosmeticsFeature feature) {
         return switch (feature) {
-            case BASE_PARTICLES -> NODE_FEATURE_BASE_PARTICLES;
-            case BASE_HATS -> NODE_FEATURE_BASE_HATS;
-            case CAPES -> NODE_FEATURE_CAPES;
-            case BLENDED_PARTICLES -> NODE_FEATURE_BLENDED_PARTS;
-            case CUSTOM_HATS -> NODE_FEATURE_CUSTOM_HATS;
-            case PETS -> NODE_FEATURE_PETS;
-            case MINI_GAMES -> NODE_FEATURE_MINI_GAMES;
-            case PARTICLE_LAB -> NODE_FEATURE_PARTICLE_LAB;
+            case BASE_PARTICLES -> CosmeticsPermissionNodes.FEATURE_BASE_PARTICLES;
+            case BASE_HATS -> CosmeticsPermissionNodes.FEATURE_BASE_HATS;
+            case CAPES -> CosmeticsPermissionNodes.FEATURE_CAPES;
+            case BLENDED_PARTICLES -> CosmeticsPermissionNodes.FEATURE_BLENDED_PARTICLES;
+            case CUSTOM_HATS -> CosmeticsPermissionNodes.FEATURE_CUSTOM_HATS;
+            case PETS -> CosmeticsPermissionNodes.FEATURE_PETS;
+            case MINI_GAMES -> CosmeticsPermissionNodes.FEATURE_MINI_GAMES;
+            case PARTICLE_LAB -> CosmeticsPermissionNodes.FEATURE_PARTICLE_LAB;
         };
     }
 
@@ -233,16 +319,16 @@ public final class CosmeticsPermissions {
 
     private static CosmeticsRank getHighestRank(ServerPlayer player) {
         // We check in descending order so the "highest" wins.
-        if (hasNode(player, NODE_RANK_MVP_PLUS)) {
+        if (has(player, CosmeticsPermissionNodes.RANK_MVP_PLUS)) {
             return CosmeticsRank.MVP_PLUS;
         }
-        if (hasNode(player, NODE_RANK_MVP)) {
+        if (has(player, CosmeticsPermissionNodes.RANK_MVP)) {
             return CosmeticsRank.MVP;
         }
-        if (hasNode(player, NODE_RANK_VIP_PLUS)) {
+        if (has(player, CosmeticsPermissionNodes.RANK_VIP_PLUS)) {
             return CosmeticsRank.VIP_PLUS;
         }
-        if (hasNode(player, NODE_RANK_VIP)) {
+        if (has(player, CosmeticsPermissionNodes.RANK_VIP)) {
             return CosmeticsRank.VIP;
         }
         return CosmeticsRank.NONE;
@@ -252,30 +338,17 @@ public final class CosmeticsPermissions {
     //  Permission / op bridge
     // ---------------------------------------------------
 
-    private static boolean hasNode(ServerPlayer player, String node) {
-        if (player == null || node == null || node.isEmpty()) {
+    /**
+     * Check if a player has a specific permission node.
+     * Uses registered PermissionNode instances instead of dynamic creation.
+     */
+    private static boolean has(ServerPlayer player, PermissionNode<Boolean> node) {
+        if (player == null || node == null) {
             return false;
         }
 
         try {
-            // Get or create a PermissionNode for this string
-            PermissionNode<Boolean> permNode = NODE_CACHE.computeIfAbsent(node, n -> {
-                // Parse the node string (e.g., "cosmeticslite.rank.vip")
-                String[] parts = n.split("\\.");
-                if (parts.length < 2) {
-                    return null;
-                }
-                String namespace = parts[0];
-                String path = n.substring(namespace.length() + 1); // Everything after the first dot
-                
-                // Create a PermissionNode with default false (no permission by default)
-                return new PermissionNode<>(namespace, path, PermissionTypes.BOOLEAN,
-                        (p, uuid, ctx) -> false);
-            });
-
-            if (permNode != null) {
-                return PermissionAPI.getPermission(player, permNode);
-            }
+            return PermissionAPI.getPermission(player, node);
         } catch (Throwable t) {
             // If PermissionAPI fails, fall through to OP check
         }

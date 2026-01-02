@@ -166,6 +166,7 @@ public class CosmeticsChestScreen extends Screen {
     private Button leftBtn, rightBtn;
     private Button equipBtn, unequipBtn, clearBtn;
     private Button miniGamesBtn;
+    private net.minecraft.client.gui.components.Button particleLabBtn;
 
     // PETS extras
     private Button randomBtn;
@@ -414,10 +415,13 @@ public class CosmeticsChestScreen extends Screen {
         int buttonWidth = 110; // same width as before
         int buttonHeight = 20; // same height as before
         int buttonX = guiCenterX - buttonWidth / 2; // centered horizontally
-        addRenderableWidget(
+        particleLabBtn = addRenderableWidget(
                 Button.builder(Component.literal("Particle Lab"), b -> {
-                    net.minecraft.client.Minecraft.getInstance().setScreen(
-                        new com.pastlands.cosmeticslite.client.screen.ParticleLabScreen());
+                    if (minecraft != null) {
+                        com.pastlands.cosmeticslite.CosmeticsLite.NETWORK.sendToServer(
+                            new com.pastlands.cosmeticslite.network.OpenParticleLabPacket()
+                        );
+                    }
                 })
                 .pos(buttonX, buttonY).size(buttonWidth, buttonHeight).build());
         
@@ -989,6 +993,13 @@ public class CosmeticsChestScreen extends Screen {
     public boolean mouseClicked(double mouseX, double mouseY, int button) {
         // Handle clicks on hat filter chips
         if ("hats".equals(state.getActiveType())) {
+
+            // IMPORTANT: the chip row overlaps the Particle Lab button area.
+            // Give the button first chance to consume the click.
+            if (particleLabBtn != null && particleLabBtn.isMouseOver(mouseX, mouseY)) {
+                return particleLabBtn.mouseClicked(mouseX, mouseY, button);
+            }
+
             int mx = (int) mouseX, my = (int) mouseY;
             boolean anyHit = false;
             for (FilterChip c : hatChips) {

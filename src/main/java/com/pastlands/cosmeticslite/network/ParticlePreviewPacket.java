@@ -1,8 +1,11 @@
 package com.pastlands.cosmeticslite.network;
 
 import com.pastlands.cosmeticslite.CosmeticsLite;
+import com.pastlands.cosmeticslite.permission.CosmeticsPermissions;
 import net.minecraft.network.FriendlyByteBuf;
+import net.minecraft.network.chat.Component;
 import net.minecraft.resources.ResourceLocation;
+import net.minecraft.server.level.ServerPlayer;
 import net.minecraftforge.network.NetworkEvent;
 
 import java.util.function.Supplier;
@@ -53,18 +56,20 @@ public final class ParticlePreviewPacket {
 
     public static void handle(ParticlePreviewPacket msg, Supplier<NetworkEvent.Context> ctx) {
         ctx.get().enqueueWork(() -> {
-            var sender = ctx.get().getSender();
+            ServerPlayer sender = ctx.get().getSender();
             if (sender == null) {
                 CosmeticsLite.LOGGER.warn("[cosmeticslite] ParticlePreviewPacket received from null sender");
                 return;
             }
             
+            // Permission check: Particle Lab requires staff/override/OP
+            if (!CosmeticsPermissions.canUseParticleLab(sender)) {
+                sender.sendSystemMessage(Component.literal("§cYou do not have permission to use Particle Lab."));
+                return;
+            }
+            
             CosmeticsLite.LOGGER.info("[cosmeticslite] ParticlePreviewPacket received from {}: enable={}, particleId={}", 
                 sender.getName().getString(), msg.enable, msg.particleId);
-            
-            // Server validates and processes the preview request
-            // For now, we'll just log it - the actual preview state is managed client-side
-            // In the future, server could validate permissions, sync to other players, etc.
             
             // Server validates and processes the preview request
             // Note: Client-side preview can use unsaved working copies or asset-based definitions,
