@@ -8,9 +8,12 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.resources.ResourceLocation;
+import net.minecraft.resources.ResourceKey;
+import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.util.Mth;
+import net.minecraft.world.level.Level;
 import net.minecraft.world.InteractionResult;
 import net.minecraft.world.entity.*;
 import net.minecraft.world.entity.animal.IronGolem;
@@ -190,6 +193,68 @@ private static String normalizeVillagerTypeKey(String key) {
     public static Entity getActivePet(ServerPlayer player) {
         return (player == null) ? null : ACTIVE_PETS.get(player.getUUID());
     }
+
+    /**
+     * Purge orphaned cosmetic pets from all loaded levels.
+     * 
+     * @param server The Minecraft server
+     * @param previewOnly If true, only scan and count; if false, remove pets
+     * @param includeActive If true, include active pets in the purge; if false, only orphaned pets
+     * @return PurgeResult containing found count, removed count, and counts by dimension
+     */
+    public static PurgeResult purgePets(MinecraftServer server, boolean previewOnly, boolean includeActive) {
+        int found = 0;
+        int removed = 0;
+        Map<ResourceKey<Level>, Integer> removedByDimension = new HashMap<>();
+
+        // Iterate all loaded server levels
+        for (ServerLevel level : server.getAllLevels()) {
+            ResourceKey<Level> dimensionKey = level.dimension();
+            int dimensionRemoved = 0;
+
+            // Iterate all entities in each level
+            for (Entity entity : level.getAllEntities()) {
+                // Skip if not a CosmeticsLite pet
+                if (!isCosmeticsLitePet(entity)) {
+                    continue;
+                }
+
+                // Skip if active pet and includeActive == false
+                if (!includeActive && ACTIVE_PETS.containsValue(entity)) {
+                    continue;
+                }
+
+                // This is an orphaned pet (or active if includeActive is true)
+                found++;
+
+                if (!previewOnly) {
+                    // Remove the pet
+                    if (entity instanceof Mob mob) {
+                        mob.getNavigation().stop();
+                        mob.setTarget(null);
+                    }
+                    entity.discard();
+                    removed++;
+                    dimensionRemoved++;
+                }
+            }
+
+            if (dimensionRemoved > 0) {
+                removedByDimension.put(dimensionKey, dimensionRemoved);
+            }
+        }
+
+        return new PurgeResult(found, removed, removedByDimension);
+    }
+
+    /**
+     * Result record for pet purge operations.
+     */
+    public record PurgeResult(
+        int found,
+        int removed,
+        Map<ResourceKey<Level>, Integer> removedByDimension
+    ) {}
 
     /** Allow server logic (equip request) to immediately permit a spawn this tick. */
     public static void clearSpawnDebounce(ServerPlayer sp) {
@@ -1055,6 +1120,38 @@ if (pet instanceof net.minecraft.world.entity.npc.Villager villager) {
         CompoundTag tag = e.getPersistentData().getCompound(ENBT_ROOT);
         if (tag.hasUUID(ENBT_OWNER)) return true;
         return e.getClass().getSimpleName().startsWith("CosmeticPet");
+    }
+
+    /**
+     * Check if an entity is a CosmeticsLite pet.
+     * A pet is considered a CosmeticsLite pet if:
+     * - It exists in ACTIVE_PETS, OR
+     * - It has ENBT_OWNER tag, OR
+     * - Its class name starts with "CosmeticPet"
+     */
+    private static boolean isCosmeticsLitePet(Entity e) {
+        if (e == null || e.isRemoved()) return false;
+        
+        // Check if in ACTIVE_PETS
+        if (ACTIVE_PETS.containsValue(e)) return true;
+        
+        // Check if has ENBT_OWNER tag
+        CompoundTag tag = e.getPersistentData().getCompound(ENBT_ROOT);
+        if (tag.hasUUID(ENBT_OWNER)) return true;
+        
+        // Check if class name starts with "CosmeticPet"
+        return e.getClass().getSimpleName().startsWith("CosmeticPet");
+    }
+
+    /**
+     * Check if a pet is orphaned.
+     * A pet is orphaned if:
+     * - It is a CosmeticsLite pet, AND
+     * - It is NOT present in ACTIVE_PETS.values()
+     */
+    private static boolean isOrphaned(Entity e) {
+        if (!isCosmeticsLitePet(e)) return false;
+        return !ACTIVE_PETS.containsValue(e);
     }
 
     /* ====================================================================== */

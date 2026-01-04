@@ -218,6 +218,23 @@ public class CosmeticCommand {
                 )
             )
             // -------------------------
+            // /cosmetics kill orphaned [preview]
+            // -------------------------
+            .then(Commands.literal("kill")
+                .then(Commands.literal("orphaned")
+                    .executes(ctx -> {
+                        // Execute (remove pets)
+                        return executeOrphanedPetsCleanup(ctx.getSource(), false);
+                    })
+                    .then(Commands.literal("preview")
+                        .executes(ctx -> {
+                            // Preview (scan only)
+                            return executeOrphanedPetsCleanup(ctx.getSource(), true);
+                        })
+                    )
+                )
+            )
+            // -------------------------
             // /cosmetics particles ...
             // -------------------------
             .then(Commands.literal("particles")
@@ -320,6 +337,60 @@ public class CosmeticCommand {
             // Fallback: vanilla OPs
             return player.hasPermissions(2);
         }
+    }
+
+    private static boolean canUseAdmin(CommandSourceStack source) {
+        // Console always has admin permission
+        if (source.getEntity() == null) {
+            return true;
+        }
+        
+        // For players, check permission
+        if (source.getEntity() instanceof ServerPlayer player) {
+            return canUseAdmin(player);
+        }
+        
+        // Fallback: check permission level
+        return source.hasPermission(2);
+    }
+
+    private static int executeOrphanedPetsCleanup(CommandSourceStack source, boolean previewOnly) {
+        // Validate sender is a ServerPlayer or server console
+        if (source.getEntity() != null && !(source.getEntity() instanceof ServerPlayer)) {
+            source.sendFailure(Component.literal("§cThis command can only be used by players or the server console."));
+            return 0;
+        }
+
+        // Verify admin permission
+        if (!canUseAdmin(source)) {
+            source.sendFailure(Component.literal("§cYou do not have permission to use this command."));
+            return 0;
+        }
+
+        // Get server
+        var server = source.getServer();
+        if (server == null) {
+            source.sendFailure(Component.literal("§cServer not available."));
+            return 0;
+        }
+
+        // Call PetManager.purgePets
+        var result = com.pastlands.cosmeticslite.entity.PetManager.purgePets(server, previewOnly, false);
+
+        // Send summary message
+        if (previewOnly) {
+            source.sendSuccess(() -> 
+                Component.literal("Found " + result.found() + " orphaned cosmetic pets."), 
+                true
+            );
+        } else {
+            source.sendSuccess(() -> 
+                Component.literal("Removed " + result.removed() + "/" + result.found() + " orphaned cosmetic pets."), 
+                true
+            );
+        }
+
+        return 1;
     }
 
     // -------------------------
