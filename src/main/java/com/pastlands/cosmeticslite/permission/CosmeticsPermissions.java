@@ -38,6 +38,19 @@ public final class CosmeticsPermissions {
 
     private CosmeticsPermissions() {
     }
+    
+    /**
+     * Result of a permission check, including whether it's allowed and an optional reason code.
+     */
+    public record PermissionResult(boolean allowed, String reasonCode) {
+        public static PermissionResult allow() {
+            return new PermissionResult(true, null);
+        }
+        
+        public static PermissionResult deny(String reasonCode) {
+            return new PermissionResult(false, reasonCode);
+        }
+    }
 
     // ---------------------------------------------------
     //  Public API used throughout CosmeticsLite
@@ -191,13 +204,22 @@ public final class CosmeticsPermissions {
      * Determines base vs blended/lab particle based on naming and registry.
      */
     public static boolean canUseParticle(ServerPlayer player, CosmeticDef def) {
+        return checkParticlePermission(player, def).allowed();
+    }
+    
+    /**
+     * Centralized permission check for particles that returns a result with reason code.
+     * Use this for user-initiated actions where you need to show messages.
+     * For background checks (broadcasting, rendering), use canUseParticle() which doesn't message.
+     */
+    public static PermissionResult checkParticlePermission(ServerPlayer player, CosmeticDef def) {
         if (player == null || def == null) {
-            return false;
+            return PermissionResult.deny("null_params");
         }
 
         // Ensure it's actually a particle
         if (!CosmeticsRegistry.TYPE_PARTICLES.equals(def.type())) {
-            return false;
+            return PermissionResult.deny("not_particle");
         }
 
         ResourceLocation id = def.id();
@@ -206,13 +228,17 @@ public final class CosmeticsPermissions {
         boolean isBlended = CosmeticsRegistry.isBlendedParticle(def);
 
         // Check if it's from the Particle Lab
-        boolean isFromLab = CosmeticParticleRegistry.isLabParticle(id);
+        boolean isFromLab = com.pastlands.cosmeticslite.particle.config.CosmeticParticleRegistry.isLabParticle(id);
 
+        CosmeticsFeature requiredFeature;
         if (isBlended || isFromLab) {
-            return canUseFeature(player, CosmeticsFeature.BLENDED_PARTICLES);
+            requiredFeature = CosmeticsFeature.BLENDED_PARTICLES;
         } else {
-            return canUseFeature(player, CosmeticsFeature.BASE_PARTICLES);
+            requiredFeature = CosmeticsFeature.BASE_PARTICLES;
         }
+        
+        boolean allowed = canUseFeature(player, requiredFeature);
+        return allowed ? PermissionResult.allow() : PermissionResult.deny("feature_" + requiredFeature.name());
     }
 
     // ---------------------------------------------------

@@ -354,6 +354,32 @@ public class CosmeticCommand {
         return source.hasPermission(2);
     }
 
+
+    // -------------------------
+    // Player Access Helpers (legacy global switch)
+    // -------------------------
+    private static boolean hasAccess(ServerPlayer player) {
+        CompoundTag tag = player.getPersistentData();
+        return tag.getBoolean(UNLOCK_TAG);
+    }
+
+    private static void grantAccess(ServerPlayer player) {
+        CompoundTag tag = player.getPersistentData();
+        tag.putBoolean(UNLOCK_TAG, true);
+    }
+
+    private static void revokeAccess(ServerPlayer player) {
+        CompoundTag tag = player.getPersistentData();
+        tag.remove(UNLOCK_TAG);
+    }
+
+    public static void sendAccessSync(ServerPlayer player) {
+        CosmeticsLite.NETWORK.send(
+            PacketDistributor.PLAYER.with(() -> player),
+            new com.pastlands.cosmeticslite.network.SyncCosmeticsAccessPacket(hasAccess(player))
+        );
+    }
+
     private static int executeOrphanedPetsCleanup(CommandSourceStack source, boolean previewOnly) {
         // Validate sender is a ServerPlayer or server console
         if (source.getEntity() != null && !(source.getEntity() instanceof ServerPlayer)) {
@@ -361,11 +387,7 @@ public class CosmeticCommand {
             return 0;
         }
 
-        // Verify admin permission
-        if (!canUseAdmin(source)) {
-            source.sendFailure(Component.literal("§cYou do not have permission to use this command."));
-            return 0;
-        }
+        // No permission check - available to all players
 
         // Get server
         var server = source.getServer();
@@ -391,31 +413,6 @@ public class CosmeticCommand {
         }
 
         return 1;
-    }
-
-    // -------------------------
-    // Player Access Helpers (legacy global switch)
-    // -------------------------
-    private static boolean hasAccess(ServerPlayer player) {
-        CompoundTag tag = player.getPersistentData();
-        return tag.getBoolean(UNLOCK_TAG);
-    }
-
-    private static void grantAccess(ServerPlayer player) {
-        CompoundTag tag = player.getPersistentData();
-        tag.putBoolean(UNLOCK_TAG, true);
-    }
-
-    private static void revokeAccess(ServerPlayer player) {
-        CompoundTag tag = player.getPersistentData();
-        tag.remove(UNLOCK_TAG);
-    }
-
-    public static void sendAccessSync(ServerPlayer player) {
-        CosmeticsLite.NETWORK.send(
-            PacketDistributor.PLAYER.with(() -> player),
-            new com.pastlands.cosmeticslite.network.SyncCosmeticsAccessPacket(hasAccess(player))
-        );
     }
 
     // -------------------------

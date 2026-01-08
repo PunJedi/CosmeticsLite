@@ -34,6 +34,7 @@ import net.minecraftforge.event.entity.living.LivingDamageEvent;
 import net.minecraftforge.event.entity.living.LivingHurtEvent;
 import net.minecraftforge.event.entity.player.PlayerEvent;
 import net.minecraftforge.event.entity.player.PlayerInteractEvent;
+import net.minecraftforge.event.server.ServerStartedEvent;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
 import net.minecraftforge.fml.common.Mod;
 import org.jetbrains.annotations.Nullable;
@@ -82,6 +83,12 @@ public class PetManager {
 
     /** Stale pet cleanup: timeout in ticks (5 minutes = 6000 ticks). */
     private static final int STALE_PET_TIMEOUT_TICKS = 20 * 60 * 5; // 5 minutes
+    
+    /** Orphan safety timeout: how long a pet can exist without owner validation before being considered orphaned (10 minutes). */
+    private static final int ORPHAN_SAFETY_TIMEOUT_TICKS = 20 * 60 * 10; // 10 minutes
+    
+    /** Periodic cleanup sweep cadence (every 5 minutes = 6000 ticks). */
+    private static final int CLEANUP_SWEEP_PERIOD_TICKS = 20 * 60 * 5; // 5 minutes
 
 private static String normalizeVillagerTypeKey(String key) {
     if (key == null || key.isBlank()) return "minecraft:plains";
@@ -100,6 +107,9 @@ private static String normalizeVillagerTypeKey(String key) {
     // Entity persistent data keys
     private static final String ENBT_ROOT = "coslite";
     private static final String ENBT_OWNER = "owner";
+    private static final String ENBT_PET_TYPE = "pet_type"; // string/id of pet type
+    private static final String ENBT_SPAWNED_AT = "spawned_at"; // long game time
+    private static final String ENBT_LAST_OWNER_SEEN = "last_owner_seen"; // long game time
     private static final String ENBT_DYE = "dye";       // lock for explicit dye choice
     private static final String ENBT_VAR = "variant";   // lock for explicit variant choice
     private static final String ENBT_LAST_INTERACT_TICK = "lastInteractTick";
@@ -165,6 +175,7 @@ private static String normalizeVillagerTypeKey(String key) {
             ACTIVE_PETS.put(pid, nearbyOwned);
             applyCosmeticSafety(nearbyOwned);
             applySavedStyleFromPlayer(player, nearbyOwned); // authoritative style push
+            updateLastOwnerSeen(nearbyOwned, player); // stamp last_owner_seen
             return; // no spawn churn
         }
 
@@ -172,6 +183,7 @@ private static String normalizeVillagerTypeKey(String key) {
         if (current != null && !current.isRemoved() && isCorrectPetType(current, desiredId)) {
             applyCosmeticSafety(current);
             applySavedStyleFromPlayer(player, current); // authoritative style push
+            updateLastOwnerSeen(current, player); // stamp last_owner_seen
             return;
         }
 
@@ -310,7 +322,7 @@ private static String normalizeVillagerTypeKey(String key) {
 
             if (level.addFreshEntity(pet)) {
                 ACTIVE_PETS.put(player.getUUID(), pet);
-                tagOwner(pet, player);
+                tagOwner(pet, player, petId);
                 LOGGER.info("[PetManager] Spawned {} for {}", petId, player.getGameProfile().getName());
             } else {
                 LOGGER.error("[PetManager] Failed to add {} for {}", petId, player.getGameProfile().getName());
@@ -361,6 +373,9 @@ private static String normalizeVillagerTypeKey(String key) {
         // Seed last-desired on login to avoid spurious "changed" detection
         ResourceLocation desiredId = PlayerData.get(sp).map(pd -> pd.getEquippedId(PlayerData.TYPE_PETS)).orElse(null);
         LAST_DESIRED.put(sp.getUUID(), desiredId == null ? "" : desiredId.toString());
+
+        // Adopt/reattach pet if nearby and update last_owner_seen
+        adoptNearbyPetIfPresent(sp, desiredId);
 
         // Immediate + next tick
         updatePlayerPet(sp);
@@ -461,6 +476,14 @@ private static String normalizeVillagerTypeKey(String key) {
     @SubscribeEvent
     public static void onServerTick(TickEvent.ServerTickEvent e) {
         if (e.phase != TickEvent.Phase.END) return;
+        
+        MinecraftServer server = e.getServer();
+        if (server == null) return;
+        
+        // Periodic cleanup sweep (every 5 minutes)
+        if (server.getTickCount() % CLEANUP_SWEEP_PERIOD_TICKS == 0) {
+            cleanupOrphanedPets(server);
+        }
         
         // Teleport distance threshold
         final double TELEPORT_DIST = 48.0;
@@ -1108,10 +1131,28 @@ if (pet instanceof net.minecraft.world.entity.npc.Villager villager) {
         return false;
     }
 
-    private static void tagOwner(Entity e, ServerPlayer owner) {
+    private static void tagOwner(Entity e, ServerPlayer owner, ResourceLocation petType) {
         CompoundTag tag = e.getPersistentData().getCompound(ENBT_ROOT);
         tag.putUUID(ENBT_OWNER, owner.getUUID());
+        if (petType != null) {
+            tag.putString(ENBT_PET_TYPE, petType.toString());
+        }
+        long currentTime = owner.level().getGameTime();
+        tag.putLong(ENBT_SPAWNED_AT, currentTime);
+        tag.putLong(ENBT_LAST_OWNER_SEEN, currentTime);
         e.getPersistentData().put(ENBT_ROOT, tag);
+    }
+    
+    /**
+     * Update last_owner_seen timestamp when owner is online and pet is validated/adopted.
+     */
+    private static void updateLastOwnerSeen(Entity pet, ServerPlayer owner) {
+        if (pet == null || owner == null) return;
+        CompoundTag tag = pet.getPersistentData().getCompound(ENBT_ROOT);
+        if (tag.hasUUID(ENBT_OWNER) && owner.getUUID().equals(tag.getUUID(ENBT_OWNER))) {
+            tag.putLong(ENBT_LAST_OWNER_SEEN, owner.level().getGameTime());
+            pet.getPersistentData().put(ENBT_ROOT, tag);
+        }
     }
 
     private static boolean isCosmeticPet(Entity e) {
@@ -1143,16 +1184,6 @@ if (pet instanceof net.minecraft.world.entity.npc.Villager villager) {
         return e.getClass().getSimpleName().startsWith("CosmeticPet");
     }
 
-    /**
-     * Check if a pet is orphaned.
-     * A pet is orphaned if:
-     * - It is a CosmeticsLite pet, AND
-     * - It is NOT present in ACTIVE_PETS.values()
-     */
-    private static boolean isOrphaned(Entity e) {
-        if (!isCosmeticsLitePet(e)) return false;
-        return !ACTIVE_PETS.containsValue(e);
-    }
 
     /* ====================================================================== */
     /* Registry / Helpers                                                     */
@@ -1415,6 +1446,191 @@ if (pet instanceof net.minecraft.world.entity.npc.Villager villager) {
             case BLACK:      return new int[]{ 21,  21,  26};
         }
         return new int[]{255,255,255};
+    }
+
+    /* ====================================================================== */
+    /* Orphan Detection & Cleanup                                             */
+    /* ====================================================================== */
+    
+    /**
+     * Adopt nearby pet if present on login and update last_owner_seen.
+     */
+    private static void adoptNearbyPetIfPresent(ServerPlayer player, @Nullable ResourceLocation desiredId) {
+        if (!(player.level() instanceof ServerLevel level)) return;
+        
+        double radius = 32.0D; // Wider radius for login adoption
+        AABB box = new AABB(player.getX() - radius, player.getY() - 8, player.getZ() - radius,
+                            player.getX() + radius, player.getY() + 8, player.getZ() + radius);
+        List<Entity> found = level.getEntities((Entity)null, box, PetManager::isCosmeticPet);
+        UUID ownerId = player.getUUID();
+        
+        for (Entity pet : found) {
+            CompoundTag tag = pet.getPersistentData().getCompound(ENBT_ROOT);
+            if (!tag.hasUUID(ENBT_OWNER)) continue;
+            if (!ownerId.equals(tag.getUUID(ENBT_OWNER))) continue;
+            
+            // If desiredId is specified, only adopt matching type
+            if (desiredId != null && !isCorrectPetType(pet, desiredId)) continue;
+            
+            // Adopt this pet
+            ACTIVE_PETS.put(ownerId, pet);
+            applyCosmeticSafety(pet);
+            updateLastOwnerSeen(pet, player);
+            
+            // If we found a matching pet, we're done
+            if (desiredId != null) break;
+        }
+    }
+    
+    /**
+     * Check if a pet entity is truly orphaned according to the strict definition.
+     * A pet is orphaned only if:
+     * 1. It has no valid owner UUID stored on the entity, OR
+     * 2. It has an owner UUID but that owner is not known to the server and the pet has been around longer than safety timeout, OR
+     * 3. It has an owner UUID but that owner's saved player cosmetics data indicates no pet equipped, and the entity is older than timeout, OR
+     * 4. It is a duplicate (same owner, same pet type) beyond the allowed count, older instance gets removed.
+     * 
+     * @param pet The pet entity to check
+     * @param server The Minecraft server
+     * @param currentTime Current game time
+     * @return true if the pet is orphaned and should be removed
+     */
+    private static boolean isOrphanedPet(Entity pet, MinecraftServer server, long currentTime) {
+        if (pet == null || pet.isRemoved()) return false;
+        if (!isCosmeticsLitePet(pet)) return false;
+        
+        // Never touch pets with owners currently online
+        if (ACTIVE_PETS.containsValue(pet)) return false;
+        
+        CompoundTag tag = pet.getPersistentData().getCompound(ENBT_ROOT);
+        
+        // Case 1: No valid owner UUID
+        if (!tag.hasUUID(ENBT_OWNER)) {
+            LOGGER.debug("[PetManager] Pet {} has no owner UUID - orphaned", pet.getClass().getSimpleName());
+            return true;
+        }
+        
+        UUID ownerId = tag.getUUID(ENBT_OWNER);
+        
+        // Case 2: Owner not known to server and pet is older than safety timeout
+        ServerPlayer owner = server.getPlayerList().getPlayer(ownerId);
+        if (owner == null || owner.isRemoved()) {
+            // Owner is offline/unknown
+            long spawnedAt = tag.contains(ENBT_SPAWNED_AT) ? tag.getLong(ENBT_SPAWNED_AT) : currentTime;
+            long age = currentTime - spawnedAt;
+            
+            if (age > ORPHAN_SAFETY_TIMEOUT_TICKS) {
+                LOGGER.debug("[PetManager] Pet {} owner {} offline for {} ticks - orphaned", 
+                    pet.getClass().getSimpleName(), ownerId, age);
+                return true;
+            }
+            // Too new, keep it
+            return false;
+        }
+        
+        // Case 3: Owner is online but their PlayerData shows no pet equipped, and pet is older than timeout
+        Optional<PlayerData> playerDataOpt = PlayerData.get(owner);
+        if (playerDataOpt.isPresent()) {
+            ResourceLocation equippedPet = playerDataOpt.get().getEquippedId(PlayerData.TYPE_PETS);
+            boolean hasPetEquipped = equippedPet != null && !isAir(equippedPet);
+            
+            if (!hasPetEquipped) {
+                long spawnedAt = tag.contains(ENBT_SPAWNED_AT) ? tag.getLong(ENBT_SPAWNED_AT) : currentTime;
+                long age = currentTime - spawnedAt;
+                
+                if (age > ORPHAN_SAFETY_TIMEOUT_TICKS) {
+                    LOGGER.debug("[PetManager] Pet {} owner {} has no pet equipped and pet is {} ticks old - orphaned", 
+                        pet.getClass().getSimpleName(), owner.getName().getString(), age);
+                    return true;
+                }
+            } else {
+                // Owner has a pet equipped - check if this pet matches
+                String petType = tag.contains(ENBT_PET_TYPE) ? tag.getString(ENBT_PET_TYPE) : null;
+                if (petType != null && !equippedPet.toString().equals(petType)) {
+                    // Pet type mismatch - this pet is orphaned
+                    long spawnedAt = tag.contains(ENBT_SPAWNED_AT) ? tag.getLong(ENBT_SPAWNED_AT) : currentTime;
+                    long age = currentTime - spawnedAt;
+                    
+                    if (age > ORPHAN_SAFETY_TIMEOUT_TICKS) {
+                        LOGGER.debug("[PetManager] Pet {} type {} doesn't match owner's equipped {} - orphaned", 
+                            pet.getClass().getSimpleName(), petType, equippedPet);
+                        return true;
+                    }
+                }
+            }
+        }
+        
+        // Case 4: Duplicate check is handled separately in cleanupDuplicateOwnedCosmeticPets
+        // This method only checks for true orphans
+        
+        return false;
+    }
+    
+    /**
+     * Perform a light sweep over loaded entities to remove orphaned pets.
+     * Only removes pets that fail the orphan definition.
+     * Does not touch pets with owners currently online.
+     * 
+     * @param server The Minecraft server
+     * @return Number of orphaned pets removed
+     */
+    public static int cleanupOrphanedPets(MinecraftServer server) {
+        if (server == null) return 0;
+        
+        int removed = 0;
+        long currentTime = server.overworld().getGameTime();
+        
+        // Iterate all loaded server levels
+        for (ServerLevel level : server.getAllLevels()) {
+            List<Entity> toRemove = new ArrayList<>();
+            
+            // First pass: identify orphaned pets
+            for (Entity entity : level.getAllEntities()) {
+                if (isOrphanedPet(entity, server, currentTime)) {
+                    toRemove.add(entity);
+                }
+            }
+            
+            // Second pass: remove orphaned pets
+            for (Entity pet : toRemove) {
+                if (pet instanceof Mob mob) {
+                    mob.getNavigation().stop();
+                    mob.setTarget(null);
+                }
+                pet.discard();
+                removed++;
+                LOGGER.info("[PetManager] Removed orphaned pet {} in dimension {}", 
+                    pet.getClass().getSimpleName(), level.dimension().location());
+            }
+        }
+        
+        if (removed > 0) {
+            LOGGER.info("[PetManager] Cleanup sweep removed {} orphaned pet(s)", removed);
+        }
+        
+        return removed;
+    }
+    
+    /**
+     * Check if a ResourceLocation represents "air" (unset).
+     */
+    private static boolean isAir(@Nullable ResourceLocation id) {
+        if (id == null) return true;
+        return "minecraft".equals(id.getNamespace()) && "air".equals(id.getPath());
+    }
+    
+    @SubscribeEvent
+    public static void onServerStarted(ServerStartedEvent event) {
+        // Run initial cleanup sweep after server is fully started
+        // Delay by a few seconds to let everything settle
+        event.getServer().execute(() -> {
+            event.getServer().execute(() -> {
+                int removed = cleanupOrphanedPets(event.getServer());
+                if (removed > 0) {
+                    LOGGER.info("[PetManager] Initial cleanup on server start removed {} orphaned pet(s)", removed);
+                }
+            });
+        });
     }
 
     /* ====================================================================== */

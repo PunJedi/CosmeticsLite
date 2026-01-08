@@ -210,6 +210,7 @@ public final class ParticleProfileResolver {
         }
         
         // Step 1: Try lab / JSON profile from registry (PRIMARY SOURCE OF TRUTH)
+        // This works for both published and unpublished custom definitions
         if (profileId != null) {
             ParticleDefinition def = CosmeticParticleRegistry.get(profileId);
             if (def != null && def.worldLayers() != null && !def.worldLayers().isEmpty()) {
@@ -217,6 +218,26 @@ public final class ParticleProfileResolver {
                 ParticleProfiles.ParticleProfile profile = CosmeticParticleRegistry.toParticleProfile(def);
                 if (profile != null) {
                     return new ResolutionResult(profile, "profile-json", profileId, null);
+                }
+            }
+        }
+        
+        // Step 1.5: If profileId is null but we have a cosmetic ID, try direct lookup
+        // This handles cases where catalog entry might be missing but definition exists
+        if (profileId == null && id != null) {
+            // Try to derive profile ID directly from cosmetic ID
+            String path = id.getPath();
+            if (path.startsWith("cosmetic/")) {
+                path = "particle/" + path.substring("cosmetic/".length());
+            } else if (!path.startsWith("particle/")) {
+                path = "particle/" + path;
+            }
+            ResourceLocation directProfileId = ResourceLocation.fromNamespaceAndPath(id.getNamespace(), path);
+            ParticleDefinition def = CosmeticParticleRegistry.get(directProfileId);
+            if (def != null && def.worldLayers() != null && !def.worldLayers().isEmpty()) {
+                ParticleProfiles.ParticleProfile profile = CosmeticParticleRegistry.toParticleProfile(def);
+                if (profile != null) {
+                    return new ResolutionResult(profile, "profile-json-direct", directProfileId, null);
                 }
             }
         }

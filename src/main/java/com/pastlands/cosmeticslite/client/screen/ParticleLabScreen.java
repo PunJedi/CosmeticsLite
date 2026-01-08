@@ -106,6 +106,14 @@ public class ParticleLabScreen extends Screen {
     // Right panel: Editor
     private String activeTab = "general"; // "general", "layers", "world_layers", "preview"
     
+    // World Layers selection persistence
+    private Integer selectedWorldLayerIndex = null; // Which world layer row is selected (0-based)
+    private ResourceLocation selectedWorldLayerParticleId = null; // Particle ID selected in picker for that layer
+    
+    // Scroll offset persistence per tab
+    private float layersScrollOffsetStored = 0.0f;
+    private float worldScrollOffsetStored = 0.0f;
+    
     // Camera management for Preview tab
     private CameraType previousCameraType = null;
     
@@ -147,6 +155,9 @@ public class ParticleLabScreen extends Screen {
     
     // World tab scroll state
     private static final int WORLD_CARD_HEIGHT = 230 + LABEL_HEIGHT;
+    
+    // Particle type filtering
+    private boolean showAdvancedParticles = false; // Toggle for showing parameterized particle types
     private static final int WORLD_CARD_GAP = 14; // Increased for better visual separation between cards
     private static final int WORLD_VIEWPORT_TOP_MARGIN = 30;   // space under tab buttons and title (accounts for title + warning text)
     private static final int WORLD_VIEWPORT_BOTTOM_MARGIN = 40; // space above bottom buttons (ensures no overlap)
@@ -227,6 +238,7 @@ public class ParticleLabScreen extends Screen {
         
         // Dropdown widgets
         com.pastlands.cosmeticslite.client.screen.parts.StringDropdownWidget rotationModeDropdown;
+        com.pastlands.cosmeticslite.client.screen.parts.StringDropdownWidget rotationDirectionDropdown;
         com.pastlands.cosmeticslite.client.screen.parts.StringDropdownWidget motionCurveDropdown;
         
         // Keep old list for backward compatibility (but prefer individual fields)
@@ -482,6 +494,13 @@ public class ParticleLabScreen extends Screen {
     }
     
     private void setActiveTab(String tab) {
+        // Store current scroll offsets before switching
+        if ("layers".equals(this.activeTab)) {
+            layersScrollOffsetStored = layersScrollOffset;
+        } else if ("world_layers".equals(this.activeTab)) {
+            worldScrollOffsetStored = worldScrollOffset;
+        }
+        
         this.activeTab = tab;
         
         // Auto-switch to 3rd person when opening Preview tab
@@ -494,10 +513,18 @@ public class ParticleLabScreen extends Screen {
             this.minecraft.options.setCameraType(CameraType.THIRD_PERSON_BACK);
         }
         
-        // Reset scroll offsets when switching tabs
-        layersScrollOffset = 0.0f;
+        // Restore scroll offsets for the tab being switched to
+        if ("layers".equals(tab)) {
+            layersScrollOffset = layersScrollOffsetStored;
+        } else if ("world_layers".equals(tab)) {
+            worldScrollOffset = worldScrollOffsetStored;
+        } else {
+            // Reset for other tabs
+            layersScrollOffset = 0.0f;
+            worldScrollOffset = 0.0f;
+        }
+        
         layersMaxScroll = 0.0f;
-        worldScrollOffset = 0.0f;
         worldMaxScroll = 0.0f;
         draggingWorldScrollbar = false;
         rebuildTabWidgets();
@@ -1441,51 +1468,62 @@ public class ParticleLabScreen extends Screen {
     }
     
     /**
-     * Cached list of all registered particle effect ids (vanilla + modded), sorted.
-     */
-    private static List<ResourceLocation> allEffectIds = null;
-    
-    /**
      * Returns all registered particle effect ids (vanilla + modded), sorted alphabetically.
      * Uses ForgeRegistries to include modded particles, falls back to BuiltInRegistries if needed.
+     * 
+     * @param showAdvanced If true, includes parameterized particle types (may not render correctly).
+     *                     If false, only returns SimpleParticleType instances.
      */
-    private static List<ResourceLocation> getAllEffectIds() {
-        if (allEffectIds == null) {
-            List<ResourceLocation> result = new ArrayList<>();
-            
-            // Prefer Forge registry if present (includes modded particles)
-            try {
-                if (net.minecraftforge.registries.ForgeRegistries.PARTICLE_TYPES != null) {
-                    // Use getKeys() for efficiency
-                    for (ResourceLocation id : net.minecraftforge.registries.ForgeRegistries.PARTICLE_TYPES.getKeys()) {
-                        if (id != null) {
-                            result.add(id);
+    private List<ResourceLocation> getAllEffectIds(boolean showAdvanced) {
+        List<ResourceLocation> result = new ArrayList<>();
+        
+        // Prefer Forge registry if present (includes modded particles)
+        try {
+            if (net.minecraftforge.registries.ForgeRegistries.PARTICLE_TYPES != null) {
+                for (ResourceLocation id : net.minecraftforge.registries.ForgeRegistries.PARTICLE_TYPES.getKeys()) {
+                    if (id == null) continue;
+                    
+                    // Filter by particle type if not showing advanced
+                    if (!showAdvanced) {
+                        var particleType = net.minecraftforge.registries.ForgeRegistries.PARTICLE_TYPES.getValue(id);
+                        if (particleType != null && !(particleType instanceof net.minecraft.core.particles.SimpleParticleType)) {
+                            continue; // Skip parameterized types
                         }
                     }
-                }
-            } catch (Throwable ignored) {
-                // Fall back below
-            }
-            
-            // Fallback to vanilla registry (covers dev env and ensures we get all entries)
-            for (ResourceLocation id : BuiltInRegistries.PARTICLE_TYPE.keySet()) {
-                if (id != null && !result.contains(id)) {
+                    
                     result.add(id);
                 }
             }
-            
-            // Sort alphabetically by full id string
-            result.sort(Comparator.comparing(ResourceLocation::toString, String.CASE_INSENSITIVE_ORDER));
-            allEffectIds = Collections.unmodifiableList(new ArrayList<>(result));
-            
-            // One-time sanity check: verify important vanilla effects are present
-            boolean hasFlame = allEffectIds.contains(ResourceLocation.fromNamespaceAndPath("minecraft", "flame"));
-            boolean hasWitch = allEffectIds.contains(ResourceLocation.fromNamespaceAndPath("minecraft", "witch"));
-            CosmeticsLite.LOGGER.info("[ParticleLab] Effect list sanity: size={} hasFlame={} hasWitch={}", 
-                allEffectIds.size(), hasFlame, hasWitch);
-            CosmeticsLite.LOGGER.info("[ParticleLab] Effect registry contains {} particle type(s)", allEffectIds.size());
+        } catch (Throwable ignored) {
+            // Fall back below
         }
-        return allEffectIds;
+        
+        // Fallback to vanilla registry (covers dev env and ensures we get all entries)
+        for (ResourceLocation id : BuiltInRegistries.PARTICLE_TYPE.keySet()) {
+            if (id == null || result.contains(id)) continue;
+            
+            // Filter by particle type if not showing advanced
+            if (!showAdvanced) {
+                var particleType = BuiltInRegistries.PARTICLE_TYPE.get(id);
+                if (particleType != null && !(particleType instanceof net.minecraft.core.particles.SimpleParticleType)) {
+                    continue; // Skip parameterized types
+                }
+            }
+            
+            result.add(id);
+        }
+        
+        // Sort alphabetically by full id string
+        result.sort(Comparator.comparing(ResourceLocation::toString, String.CASE_INSENSITIVE_ORDER));
+        
+        return result;
+    }
+    
+    /**
+     * Get all particle effect IDs (uses showAdvancedParticles flag).
+     */
+    private List<ResourceLocation> getAllEffectIds() {
+        return getAllEffectIds(showAdvancedParticles);
     }
     
     /**
@@ -1583,6 +1621,22 @@ public class ParticleLabScreen extends Screen {
         
         // Also clear our tracking list
         worldLayerWidgets.clear();
+        
+        // Clamp selectedWorldLayerIndex to valid range before rebuilding
+        if (editorState.workingCopy != null && selectedWorldLayerIndex != null) {
+            int maxIndex = editorState.workingCopy.worldLayers().size() - 1;
+            if (selectedWorldLayerIndex < 0) {
+                selectedWorldLayerIndex = null;
+                selectedWorldLayerParticleId = null;
+            } else if (selectedWorldLayerIndex > maxIndex) {
+                selectedWorldLayerIndex = maxIndex >= 0 ? maxIndex : null;
+                if (selectedWorldLayerIndex != null && selectedWorldLayerIndex < editorState.workingCopy.worldLayers().size()) {
+                    selectedWorldLayerParticleId = editorState.workingCopy.worldLayers().get(selectedWorldLayerIndex).effect();
+                } else {
+                    selectedWorldLayerParticleId = null;
+                }
+            }
+        }
 
         // Update viewport bounds BEFORE any card positioning (single source of truth)
         updateWorldViewportBounds();
@@ -1596,6 +1650,21 @@ public class ParticleLabScreen extends Screen {
         int panelBottom = getWorldPanelBottom();
 
         int cardWidth = panelRight - panelLeft - 20;
+
+        // Add toggle button for advanced particles (above the layer cards)
+        int toggleY = panelTop + 35; // Below tab buttons
+        Button advancedToggle = Button.builder(
+            Component.literal(showAdvancedParticles ? "Hide Advanced" : "Show Advanced"),
+            btn -> {
+                showAdvancedParticles = !showAdvancedParticles;
+                rebuildWorldLayerWidgets(); // Rebuild to refresh effect list
+            }
+        ).bounds(panelLeft + 10, toggleY, 150, 20).build();
+        addTabWidget(Tab.WORLD, advancedToggle);
+        
+        // Tooltip explaining what advanced particles are
+        advancedToggle.setTooltip(net.minecraft.client.gui.components.Tooltip.create(
+            Component.literal("Show parameterized particle types (may not render correctly in preview)")));
 
             // Get all particle effects from registry (vanilla + modded), sorted alphabetically
             List<ResourceLocation> effectIds = getAllEffectIds();
@@ -1619,7 +1688,7 @@ public class ParticleLabScreen extends Screen {
         for (int i = 0; i < editorState.workingCopy.worldLayers().size(); i++) {
             final int layerIndex = i;
 
-            // Compute cardTop using single source of truth
+            // Compute cardTop using single source of truth (account for toggle button)
             int cardTop = getWorldCardTop(i);
             int cardBottom = cardTop + WORLD_CARD_HEIGHT;
             
@@ -1735,7 +1804,15 @@ public class ParticleLabScreen extends Screen {
             wlw.effectDropdown = new com.pastlands.cosmeticslite.client.screen.parts.StringDropdownWidget(
                     col1X, row1FieldY, wideWidth, 18,
                     effectOptions,
-                    newEffect -> updateWorldLayerEffect(layerIndex, newEffect)
+                    newEffect -> {
+                        // Track selection when particle changes
+                        selectedWorldLayerIndex = layerIndex;
+                        ResourceLocation newParticleId = effectDisplayToId.get(newEffect);
+                        if (newParticleId != null) {
+                            selectedWorldLayerParticleId = newParticleId;
+                        }
+                        updateWorldLayerEffect(layerIndex, newEffect);
+                    }
             );
             wlw.effectDropdown.setX(col1X);
             wlw.effectDropdown.setY(row1FieldY);
@@ -1746,8 +1823,13 @@ public class ParticleLabScreen extends Screen {
                 return id != null ? id.toString() : display;
             });
             
-            // Set selected effect, safely handling case where it might not be in the registry
+            // Set selected effect, prioritizing persisted selection if this is the selected layer
             ResourceLocation currentEffectId = worldLayer.effect();
+            // If this is the selected layer and we have a persisted particle ID, use it
+            if (selectedWorldLayerIndex != null && selectedWorldLayerIndex == layerIndex && selectedWorldLayerParticleId != null) {
+                currentEffectId = selectedWorldLayerParticleId;
+            }
+            
             int selectedIndex = 0;
             if (currentEffectId != null) {
                 for (int idx = 0; idx < effectIds.size(); idx++) {
@@ -2046,6 +2128,28 @@ public class ParticleLabScreen extends Screen {
             wlw.rotationModeDropdown.setSelected(currentRotationModeText);
             addWorldWidget(wlw, wlw.rotationModeDropdown);
             
+            // Rotation Direction toggle (next to rotation mode)
+            int rotationDirX = col2X;
+            int rotationDirY = row5FieldY;
+            int rotationDirWidth = 120;
+            String currentDirText = worldLayer.rotationDirection() == 1 ? "Clockwise" : "Counterclockwise";
+            List<String> rotationDirOptions = List.of("Clockwise", "Counterclockwise");
+            com.pastlands.cosmeticslite.client.screen.parts.StringDropdownWidget rotationDirDropdown = 
+                new com.pastlands.cosmeticslite.client.screen.parts.StringDropdownWidget(
+                    rotationDirX, rotationDirY, rotationDirWidth, 18,
+                    rotationDirOptions,
+                    newDir -> {
+                        int dir = "Clockwise".equals(newDir) ? 1 : -1;
+                        updateWorldLayerField(layerIndex, "rotationDirection", dir);
+                    }
+                );
+            rotationDirDropdown.setX(rotationDirX);
+            rotationDirDropdown.setY(rotationDirY);
+            rotationDirDropdown.setWidth(rotationDirWidth);
+            rotationDirDropdown.setSelected(currentDirText);
+            addWorldWidget(wlw, rotationDirDropdown);
+            wlw.rotationDirectionDropdown = rotationDirDropdown;
+            
             // Tilt degrees field
             Component tiltLabelText = Component.literal("Tilt (deg):");
             com.pastlands.cosmeticslite.client.screen.parts.LabelWidget tiltLabelWidget = 
@@ -2273,7 +2377,7 @@ public class ParticleLabScreen extends Screen {
             newWorldLayers.set(layerIndex, new WorldLayerDefinition(
                 effect, old.style(), old.radius(), old.heightFactor(), old.count(), old.speedY(),
                 old.yOffset(), old.xScale(), old.direction(),
-                old.baseHeight(), old.heightStretch(), old.rotationMode(), old.tiltDegrees(),
+                old.baseHeight(), old.heightStretch(), old.rotationMode(), old.rotationDirection(), old.tiltDegrees(),
                 old.offsetX(), old.offsetY(), old.offsetZ(), old.spreadStart(), old.spreadEnd(),
                 old.jitterDegrees(), old.jitterSpeed(), old.driftX(), old.driftY(), old.driftZ(),
                 old.driftVariance(), old.torqueSpeed(), old.torqueAmount(), old.motionCurve(),
@@ -2371,7 +2475,7 @@ public class ParticleLabScreen extends Screen {
         newWorldLayers.set(layerIndex, new WorldLayerDefinition(
             old.effect(), newStyle, old.radius(), old.heightFactor(), old.count(), old.speedY(),
             old.yOffset(), old.xScale(), old.direction(),
-            old.baseHeight(), old.heightStretch(), old.rotationMode(), old.tiltDegrees(),
+            old.baseHeight(), old.heightStretch(), old.rotationMode(), old.rotationDirection(), old.tiltDegrees(),
             old.offsetX(), old.offsetY(), old.offsetZ(), old.spreadStart(), old.spreadEnd(),
             old.jitterDegrees(), old.jitterSpeed(), old.driftX(), old.driftY(), old.driftZ(),
             old.driftVariance(), old.torqueSpeed(), old.torqueAmount(), old.motionCurve(),
@@ -2388,7 +2492,7 @@ public class ParticleLabScreen extends Screen {
             case "radius" -> new WorldLayerDefinition(
                 old.effect(), old.style(), value, old.heightFactor(), old.count(), old.speedY(),
                 old.yOffset(), old.xScale(), old.direction(),
-                old.baseHeight(), old.heightStretch(), old.rotationMode(), old.tiltDegrees(),
+                old.baseHeight(), old.heightStretch(), old.rotationMode(), old.rotationDirection(), old.tiltDegrees(),
                 old.offsetX(), old.offsetY(), old.offsetZ(), old.spreadStart(), old.spreadEnd(),
                 old.jitterDegrees(), old.jitterSpeed(), old.driftX(), old.driftY(), old.driftZ(),
                 old.driftVariance(), old.torqueSpeed(), old.torqueAmount(), old.motionCurve(),
@@ -2397,7 +2501,7 @@ public class ParticleLabScreen extends Screen {
             case "baseHeight" -> new WorldLayerDefinition(
                 old.effect(), old.style(), old.radius(), old.heightFactor(), old.count(), old.speedY(),
                 old.yOffset(), old.xScale(), old.direction(),
-                value, old.heightStretch(), old.rotationMode(), old.tiltDegrees(),
+                value, old.heightStretch(), old.rotationMode(), old.rotationDirection(), old.tiltDegrees(),
                 old.offsetX(), old.offsetY(), old.offsetZ(), old.spreadStart(), old.spreadEnd(),
                 old.jitterDegrees(), old.jitterSpeed(), old.driftX(), old.driftY(), old.driftZ(),
                 old.driftVariance(), old.torqueSpeed(), old.torqueAmount(), old.motionCurve(),
@@ -2406,7 +2510,7 @@ public class ParticleLabScreen extends Screen {
             case "heightStretch" -> new WorldLayerDefinition(
                 old.effect(), old.style(), old.radius(), old.heightFactor(), old.count(), old.speedY(),
                 old.yOffset(), old.xScale(), old.direction(),
-                old.baseHeight(), value, old.rotationMode(), old.tiltDegrees(),
+                old.baseHeight(), value, old.rotationMode(), old.rotationDirection(), old.tiltDegrees(),
                 old.offsetX(), old.offsetY(), old.offsetZ(), old.spreadStart(), old.spreadEnd(),
                 old.jitterDegrees(), old.jitterSpeed(), old.driftX(), old.driftY(), old.driftZ(),
                 old.driftVariance(), old.torqueSpeed(), old.torqueAmount(), old.motionCurve(),
@@ -2415,7 +2519,7 @@ public class ParticleLabScreen extends Screen {
             case "offsetX" -> new WorldLayerDefinition(
                 old.effect(), old.style(), old.radius(), old.heightFactor(), old.count(), old.speedY(),
                 old.yOffset(), old.xScale(), old.direction(),
-                old.baseHeight(), old.heightStretch(), old.rotationMode(), old.tiltDegrees(),
+                old.baseHeight(), old.heightStretch(), old.rotationMode(), old.rotationDirection(), old.tiltDegrees(),
                 value, old.offsetY(), old.offsetZ(), old.spreadStart(), old.spreadEnd(),
                 old.jitterDegrees(), old.jitterSpeed(), old.driftX(), old.driftY(), old.driftZ(),
                 old.driftVariance(), old.torqueSpeed(), old.torqueAmount(), old.motionCurve(),
@@ -2424,7 +2528,7 @@ public class ParticleLabScreen extends Screen {
             case "offsetY" -> new WorldLayerDefinition(
                 old.effect(), old.style(), old.radius(), old.heightFactor(), old.count(), old.speedY(),
                 old.yOffset(), old.xScale(), old.direction(),
-                old.baseHeight(), old.heightStretch(), old.rotationMode(), old.tiltDegrees(),
+                old.baseHeight(), old.heightStretch(), old.rotationMode(), old.rotationDirection(), old.tiltDegrees(),
                 old.offsetX(), value, old.offsetZ(), old.spreadStart(), old.spreadEnd(),
                 old.jitterDegrees(), old.jitterSpeed(), old.driftX(), old.driftY(), old.driftZ(),
                 old.driftVariance(), old.torqueSpeed(), old.torqueAmount(), old.motionCurve(),
@@ -2433,7 +2537,7 @@ public class ParticleLabScreen extends Screen {
             case "offsetZ" -> new WorldLayerDefinition(
                 old.effect(), old.style(), old.radius(), old.heightFactor(), old.count(), old.speedY(),
                 old.yOffset(), old.xScale(), old.direction(),
-                old.baseHeight(), old.heightStretch(), old.rotationMode(), old.tiltDegrees(),
+                old.baseHeight(), old.heightStretch(), old.rotationMode(), old.rotationDirection(), old.tiltDegrees(),
                 old.offsetX(), old.offsetY(), value, old.spreadStart(), old.spreadEnd(),
                 old.jitterDegrees(), old.jitterSpeed(), old.driftX(), old.driftY(), old.driftZ(),
                 old.driftVariance(), old.torqueSpeed(), old.torqueAmount(), old.motionCurve(),
@@ -2442,7 +2546,7 @@ public class ParticleLabScreen extends Screen {
             case "tiltDegrees" -> new WorldLayerDefinition(
                 old.effect(), old.style(), old.radius(), old.heightFactor(), old.count(), old.speedY(),
                 old.yOffset(), old.xScale(), old.direction(),
-                old.baseHeight(), old.heightStretch(), old.rotationMode(), value,
+                old.baseHeight(), old.heightStretch(), old.rotationMode(), old.rotationDirection(), value,
                 old.offsetX(), old.offsetY(), old.offsetZ(), old.spreadStart(), old.spreadEnd(),
                 old.jitterDegrees(), old.jitterSpeed(), old.driftX(), old.driftY(), old.driftZ(),
                 old.driftVariance(), old.torqueSpeed(), old.torqueAmount(), old.motionCurve(),
@@ -2451,7 +2555,7 @@ public class ParticleLabScreen extends Screen {
             case "spreadStart" -> new WorldLayerDefinition(
                 old.effect(), old.style(), old.radius(), old.heightFactor(), old.count(), old.speedY(),
                 old.yOffset(), old.xScale(), old.direction(),
-                old.baseHeight(), old.heightStretch(), old.rotationMode(), old.tiltDegrees(),
+                old.baseHeight(), old.heightStretch(), old.rotationMode(), old.rotationDirection(), old.tiltDegrees(),
                 old.offsetX(), old.offsetY(), old.offsetZ(), value, old.spreadEnd(),
                 old.jitterDegrees(), old.jitterSpeed(), old.driftX(), old.driftY(), old.driftZ(),
                 old.driftVariance(), old.torqueSpeed(), old.torqueAmount(), old.motionCurve(),
@@ -2460,7 +2564,7 @@ public class ParticleLabScreen extends Screen {
             case "spreadEnd" -> new WorldLayerDefinition(
                 old.effect(), old.style(), old.radius(), old.heightFactor(), old.count(), old.speedY(),
                 old.yOffset(), old.xScale(), old.direction(),
-                old.baseHeight(), old.heightStretch(), old.rotationMode(), old.tiltDegrees(),
+                old.baseHeight(), old.heightStretch(), old.rotationMode(), old.rotationDirection(), old.tiltDegrees(),
                 old.offsetX(), old.offsetY(), old.offsetZ(), old.spreadStart(), value,
                 old.jitterDegrees(), old.jitterSpeed(), old.driftX(), old.driftY(), old.driftZ(),
                 old.driftVariance(), old.torqueSpeed(), old.torqueAmount(), old.motionCurve(),
@@ -2470,7 +2574,7 @@ public class ParticleLabScreen extends Screen {
                 old.effect(), old.style(), old.radius(), old.heightFactor(),
                 Math.max(1, Math.min(64, (int)value)), old.speedY(),
                 old.yOffset(), old.xScale(), old.direction(),
-                old.baseHeight(), old.heightStretch(), old.rotationMode(), old.tiltDegrees(),
+                old.baseHeight(), old.heightStretch(), old.rotationMode(), old.rotationDirection(), old.tiltDegrees(),
                 old.offsetX(), old.offsetY(), old.offsetZ(), old.spreadStart(), old.spreadEnd(),
                 old.jitterDegrees(), old.jitterSpeed(), old.driftX(), old.driftY(), old.driftZ(),
                 old.driftVariance(), old.torqueSpeed(), old.torqueAmount(), old.motionCurve(),
@@ -2484,7 +2588,23 @@ public class ParticleLabScreen extends Screen {
                 yield new WorldLayerDefinition(
                     old.effect(), old.style(), old.radius(), old.heightFactor(),
                     old.count(), finalValue, old.yOffset(), old.xScale(), old.direction(),
-                    old.baseHeight(), old.heightStretch(), old.rotationMode(), old.tiltDegrees(),
+                    old.baseHeight(), old.heightStretch(), old.rotationMode(), old.rotationDirection(), old.tiltDegrees(),
+                    old.offsetX(), old.offsetY(), old.offsetZ(), old.spreadStart(), old.spreadEnd(),
+                    old.jitterDegrees(), old.jitterSpeed(), old.driftX(), old.driftY(), old.driftZ(),
+                    old.driftVariance(), old.torqueSpeed(), old.torqueAmount(), old.motionCurve(),
+                    old.spawnDelayVarianceMs()
+                );
+            }
+            case "rotationDirection" -> {
+                int dir = (int)value;
+                // Clamp to +1 or -1
+                if (dir != 1 && dir != -1) {
+                    dir = 1; // Default to clockwise
+                }
+                yield new WorldLayerDefinition(
+                    old.effect(), old.style(), old.radius(), old.heightFactor(), old.count(), old.speedY(),
+                    old.yOffset(), old.xScale(), old.direction(),
+                    old.baseHeight(), old.heightStretch(), old.rotationMode(), dir, old.tiltDegrees(),
                     old.offsetX(), old.offsetY(), old.offsetZ(), old.spreadStart(), old.spreadEnd(),
                     old.jitterDegrees(), old.jitterSpeed(), old.driftX(), old.driftY(), old.driftZ(),
                     old.driftVariance(), old.torqueSpeed(), old.torqueAmount(), old.motionCurve(),
@@ -2504,7 +2624,7 @@ public class ParticleLabScreen extends Screen {
         WorldLayerDefinition updated = new WorldLayerDefinition(
             old.effect(), old.style(), old.radius(), old.heightFactor(), old.count(), old.speedY(),
             old.yOffset(), old.xScale(), old.direction(),
-            old.baseHeight(), old.heightStretch(), rotationMode, old.tiltDegrees(),
+            old.baseHeight(), old.heightStretch(), rotationMode, old.rotationDirection(), old.tiltDegrees(),
             old.offsetX(), old.offsetY(), old.offsetZ(), old.spreadStart(), old.spreadEnd(),
             old.jitterDegrees(), old.jitterSpeed(), old.driftX(), old.driftY(), old.driftZ(),
             old.driftVariance(), old.torqueSpeed(), old.torqueAmount(), old.motionCurve(),
@@ -2521,7 +2641,7 @@ public class ParticleLabScreen extends Screen {
         WorldLayerDefinition updated = new WorldLayerDefinition(
             old.effect(), old.style(), old.radius(), old.heightFactor(), old.count(), old.speedY(),
             old.yOffset(), old.xScale(), old.direction(),
-            old.baseHeight(), old.heightStretch(), old.rotationMode(), old.tiltDegrees(),
+            old.baseHeight(), old.heightStretch(), old.rotationMode(), old.rotationDirection(), old.tiltDegrees(),
             old.offsetX(), old.offsetY(), old.offsetZ(), old.spreadStart(), old.spreadEnd(),
             old.jitterDegrees(), old.jitterSpeed(), old.driftX(), old.driftY(), old.driftZ(),
             old.driftVariance(), old.torqueSpeed(), old.torqueAmount(), motionCurve,
@@ -2550,7 +2670,7 @@ public class ParticleLabScreen extends Screen {
                 yield new WorldLayerDefinition(
                     old.effect(), old.style(), old.radius(), old.heightFactor(), old.count(), old.speedY(),
                     yOffset, old.xScale(), old.direction(),
-                    old.baseHeight(), old.heightStretch(), old.rotationMode(), old.tiltDegrees(),
+                    old.baseHeight(), old.heightStretch(), old.rotationMode(), old.rotationDirection(), old.tiltDegrees(),
                     old.offsetX(), old.offsetY(), old.offsetZ(), old.spreadStart(), old.spreadEnd(),
                     old.jitterDegrees(), old.jitterSpeed(), old.driftX(), old.driftY(), old.driftZ(),
                     old.driftVariance(), old.torqueSpeed(), old.torqueAmount(), old.motionCurve(),
@@ -2571,7 +2691,7 @@ public class ParticleLabScreen extends Screen {
                 yield new WorldLayerDefinition(
                     old.effect(), old.style(), old.radius(), old.heightFactor(), old.count(), old.speedY(),
                     old.yOffset(), xScale, old.direction(),
-                    old.baseHeight(), old.heightStretch(), old.rotationMode(), old.tiltDegrees(),
+                    old.baseHeight(), old.heightStretch(), old.rotationMode(), old.rotationDirection(), old.tiltDegrees(),
                     old.offsetX(), old.offsetY(), old.offsetZ(), old.spreadStart(), old.spreadEnd(),
                     old.jitterDegrees(), old.jitterSpeed(), old.driftX(), old.driftY(), old.driftZ(),
                     old.driftVariance(), old.torqueSpeed(), old.torqueAmount(), old.motionCurve(),
@@ -2586,7 +2706,7 @@ public class ParticleLabScreen extends Screen {
                 yield new WorldLayerDefinition(
                     old.effect(), old.style(), old.radius(), old.heightFactor(), old.count(), old.speedY(),
                     old.yOffset(), old.xScale(), direction,
-                    old.baseHeight(), old.heightStretch(), old.rotationMode(), old.tiltDegrees(),
+                    old.baseHeight(), old.heightStretch(), old.rotationMode(), old.rotationDirection(), old.tiltDegrees(),
                     old.offsetX(), old.offsetY(), old.offsetZ(), old.spreadStart(), old.spreadEnd(),
                     old.jitterDegrees(), old.jitterSpeed(), old.driftX(), old.driftY(), old.driftZ(),
                     old.driftVariance(), old.torqueSpeed(), old.torqueAmount(), old.motionCurve(),
@@ -2693,10 +2813,13 @@ public class ParticleLabScreen extends Screen {
      */
     private void updateWorldViewportBounds() {
         int panelTop = getWorldPanelTop();
+        // Account for toggle button: panelTop + 35 (tab buttons) + 20 (button) + 5 (gap) = panelTop + 60
+        int toggleButtonHeight = 60;
         int panelBottom = getWorldPanelBottom();
         
         // Must match the assumptions used by the card drawing + widget placement
-        this.worldViewportTop = panelTop + WORLD_VIEWPORT_TOP_MARGIN;
+        // Add toggle button height to top margin
+        this.worldViewportTop = panelTop + WORLD_VIEWPORT_TOP_MARGIN + toggleButtonHeight;
         this.worldViewportBottom = panelBottom - WORLD_VIEWPORT_BOTTOM_MARGIN;
         
         // Guard: ensure bottom is never above top
@@ -2860,6 +2983,7 @@ public class ParticleLabScreen extends Screen {
             0.5f,  // baseHeight (default from heightFactor)
             0.0f,  // heightStretch
             com.pastlands.cosmeticslite.particle.config.RotationMode.HORIZONTAL,  // rotationMode
+            1,  // rotationDirection (clockwise by default)
             0.0f,  // tiltDegrees
             0.0f,  // offsetX
             0.0f,  // offsetY
@@ -2894,6 +3018,14 @@ public class ParticleLabScreen extends Screen {
         // Enforce 1:1 mapping (should already be correct, but ensures consistency)
         editorState.workingCopy = ensureLayerCountMatchesWorldLayers(tempDef);
         editorState.markDirty();
+        
+        // Select the newly added layer (last one)
+        int newLayerCount = editorState.workingCopy.worldLayers().size();
+        selectedWorldLayerIndex = newLayerCount - 1;
+        if (selectedWorldLayerIndex >= 0 && selectedWorldLayerIndex < newWorldLayers.size()) {
+            selectedWorldLayerParticleId = newWorldLayers.get(selectedWorldLayerIndex).effect();
+        }
+        
         updateButtonStates();
         rebuildTabWidgets(); // This calls computeWorldScrollMetrics() at the start
         updatePreviewIfActive();
@@ -2921,6 +3053,42 @@ public class ParticleLabScreen extends Screen {
             // Enforce 1:1 mapping (should already be correct, but ensures consistency)
             editorState.workingCopy = ensureLayerCountMatchesWorldLayers(tempDef);
             editorState.markDirty();
+            
+            // Update selection: if removed layer was selected, select nearest neighbor
+            if (selectedWorldLayerIndex != null) {
+                if (selectedWorldLayerIndex == layerIndex) {
+                    // Removed layer was selected - select nearest neighbor
+                    int newCount = newWorldLayers.size();
+                    if (newCount > 0) {
+                        // Prefer layer above, fall back to layer below, or last layer
+                        if (layerIndex > 0) {
+                            selectedWorldLayerIndex = layerIndex - 1;
+                        } else if (layerIndex < newCount) {
+                            selectedWorldLayerIndex = layerIndex; // Now points to what was layerIndex+1
+                        } else {
+                            selectedWorldLayerIndex = newCount - 1; // Last layer
+                        }
+                        // Update particle ID to match new selection
+                        if (selectedWorldLayerIndex >= 0 && selectedWorldLayerIndex < newWorldLayers.size()) {
+                            selectedWorldLayerParticleId = newWorldLayers.get(selectedWorldLayerIndex).effect();
+                        }
+                    } else {
+                        selectedWorldLayerIndex = null;
+                        selectedWorldLayerParticleId = null;
+                    }
+                } else if (selectedWorldLayerIndex > layerIndex) {
+                    // Selected layer is after removed one - adjust index down by 1
+                    selectedWorldLayerIndex--;
+                }
+                // Clamp to valid range
+                if (selectedWorldLayerIndex != null && selectedWorldLayerIndex >= newWorldLayers.size()) {
+                    selectedWorldLayerIndex = newWorldLayers.size() - 1;
+                    if (selectedWorldLayerIndex >= 0) {
+                        selectedWorldLayerParticleId = newWorldLayers.get(selectedWorldLayerIndex).effect();
+                    }
+                }
+            }
+            
             updateButtonStates();
             rebuildTabWidgets();
             updatePreviewIfActive();
@@ -2937,7 +3105,7 @@ public class ParticleLabScreen extends Screen {
         WorldLayerDefinition duplicatedWorld = new WorldLayerDefinition(
             srcWorld.effect(), srcWorld.style(), srcWorld.radius(), srcWorld.heightFactor(),
             srcWorld.count(), srcWorld.speedY(), srcWorld.yOffset(), srcWorld.xScale(), srcWorld.direction(),
-            srcWorld.baseHeight(), srcWorld.heightStretch(), srcWorld.rotationMode(), srcWorld.tiltDegrees(),
+            srcWorld.baseHeight(), srcWorld.heightStretch(), srcWorld.rotationMode(), srcWorld.rotationDirection(), srcWorld.tiltDegrees(),
             srcWorld.offsetX(), srcWorld.offsetY(), srcWorld.offsetZ(), srcWorld.spreadStart(), srcWorld.spreadEnd(),
             srcWorld.jitterDegrees(), srcWorld.jitterSpeed(), srcWorld.driftX(), srcWorld.driftY(), srcWorld.driftZ(),
             srcWorld.driftVariance(), srcWorld.torqueSpeed(), srcWorld.torqueAmount(), srcWorld.motionCurve(),
@@ -2972,6 +3140,13 @@ public class ParticleLabScreen extends Screen {
         // Enforce 1:1 mapping (should already be correct, but ensures consistency)
         editorState.workingCopy = ensureLayerCountMatchesWorldLayers(tempDef);
         editorState.markDirty();
+        
+        // Select the duplicated layer (inserted at layerIndex + 1)
+        selectedWorldLayerIndex = layerIndex + 1;
+        if (selectedWorldLayerIndex < newWorldLayers.size()) {
+            selectedWorldLayerParticleId = newWorldLayers.get(selectedWorldLayerIndex).effect();
+        }
+        
         updateButtonStates();
         rebuildTabWidgets(); // This calls computeWorldScrollMetrics() at the start
         updatePreviewIfActive();
@@ -3120,11 +3295,42 @@ public class ParticleLabScreen extends Screen {
      * @param id The ResourceLocation to format
      * @return The formatted display string
      */
+    /**
+     * Formats a ResourceLocation for display in the Effect dropdown.
+     * 
+     * Formatting rules:
+     * - If namespace == "minecraft": show path only (e.g., "happy_villager")
+     * - Else: show "path [namespace]" (e.g., "sparkle_burst [ars_nouveau]")
+     * - If particle type is not SimpleParticleType: append " [Needs Params]"
+     * 
+     * @param id The ResourceLocation to format
+     * @return The formatted display string
+     */
     private String formatEffectDisplay(ResourceLocation id) {
-        if ("minecraft".equals(id.getNamespace())) {
-            return id.getPath();
+        // Check if this is a SimpleParticleType (unsupported parameterized type)
+        boolean isSupported = true;
+        try {
+            var particleType = net.minecraftforge.registries.ForgeRegistries.PARTICLE_TYPES != null
+                ? net.minecraftforge.registries.ForgeRegistries.PARTICLE_TYPES.getValue(id)
+                : BuiltInRegistries.PARTICLE_TYPE.get(id);
+            if (particleType != null && !(particleType instanceof net.minecraft.core.particles.SimpleParticleType)) {
+                isSupported = false;
+            }
+        } catch (Exception ignored) {
+            // If we can't check, assume it's supported for display purposes
         }
-        return id.getPath() + " [" + id.getNamespace() + "]";
+        
+        String baseDisplay;
+        if ("minecraft".equals(id.getNamespace())) {
+            baseDisplay = id.getPath();
+        } else {
+            baseDisplay = id.getPath() + " [" + id.getNamespace() + "]";
+        }
+        
+        if (!isSupported) {
+            return baseDisplay + " [Needs Params]";
+        }
+        return baseDisplay;
     }
     
     /**

@@ -233,6 +233,7 @@ public final class ParticleDefinitionsSyncPacket {
         buf.writeFloat(worldLayer.baseHeight());
         buf.writeFloat(worldLayer.heightStretch());
         buf.writeUtf(worldLayer.rotationMode().name(), 32);
+        buf.writeVarInt(worldLayer.rotationDirection()); // +1 or -1
         buf.writeFloat(worldLayer.tiltDegrees());
         buf.writeFloat(worldLayer.offsetX());
         buf.writeFloat(worldLayer.offsetY());
@@ -270,6 +271,7 @@ public final class ParticleDefinitionsSyncPacket {
             float baseHeight = heightFactor; // Default to legacy heightFactor
             float heightStretch = 0.0f;
             RotationMode rotationMode = RotationMode.HORIZONTAL;
+            int rotationDirection = 1; // Default to clockwise
             float tiltDegrees = 0.0f;
             float offsetX = 0.0f, offsetY = 0.0f, offsetZ = 0.0f;
             float spreadStart = 1.0f, spreadEnd = 1.0f;
@@ -289,6 +291,18 @@ public final class ParticleDefinitionsSyncPacket {
                         rotationMode = RotationMode.valueOf(rotationModeStr);
                     } catch (IllegalArgumentException e) {
                         rotationMode = RotationMode.HORIZONTAL;
+                    }
+                    // Read rotation direction (+1 or -1), default to 1 if missing (backward compatibility)
+                    if (buf.readableBytes() > 0) {
+                        try {
+                            rotationDirection = buf.readVarInt();
+                            // Clamp to +1 or -1
+                            if (rotationDirection != 1 && rotationDirection != -1) {
+                                rotationDirection = 1;
+                            }
+                        } catch (Exception e) {
+                            rotationDirection = 1; // Default to clockwise
+                        }
                     }
                     tiltDegrees = buf.readFloat();
                     offsetX = buf.readFloat();
@@ -318,7 +332,7 @@ public final class ParticleDefinitionsSyncPacket {
             }
             
             return new WorldLayerDefinition(effect, style, radius, heightFactor, count, speedY, yOffset, xScale, direction,
-                baseHeight, heightStretch, rotationMode, tiltDegrees, offsetX, offsetY, offsetZ,
+                baseHeight, heightStretch, rotationMode, rotationDirection, tiltDegrees, offsetX, offsetY, offsetZ,
                 spreadStart, spreadEnd, jitterDegrees, jitterSpeed, driftX, driftY, driftZ, driftVariance,
                 torqueSpeed, torqueAmount, motionCurve, spawnDelayVarianceMs);
         } catch (Exception e) {

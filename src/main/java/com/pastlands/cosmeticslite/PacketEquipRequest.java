@@ -104,14 +104,17 @@ public final class PacketEquipRequest {
                     }
 
                     // Then check permissions (rank-based system)
-                    boolean hasPermission = checkPermissionForEquip(sp, msg.type, msg.id);
-                    if (!hasPermission) {
+                    // Use centralized check - only message on user-initiated actions (this is one)
+                    com.pastlands.cosmeticslite.permission.CosmeticsPermissions.PermissionResult permResult = 
+                        checkPermissionForEquipWithReason(sp, msg.type, msg.id);
+                    if (!permResult.allowed()) {
                         CosmeticDef def = CosmeticsRegistry.get(msg.id);
                         String reason = (def == null) 
                             ? "Unknown cosmetic. Please relog or contact staff."
                             : "You don't have permission to use this cosmetic.";
-                        CosmeticsLite.LOGGER.debug("[CosLite] Denied equip (permissions): {} -> {} for {}",
-                                msg.type, msg.id, sp.getGameProfile().getName());
+                        CosmeticsLite.LOGGER.debug("[CosLite] Denied equip (permissions): {} -> {} for {} (reason: {})",
+                                msg.type, msg.id, sp.getGameProfile().getName(), permResult.reasonCode());
+                        // Only message on user-initiated actions (equip request is one)
                         sp.sendSystemMessage(Component.literal("§c[CosmeticsLite] " + reason));
                         CosmeticsLite.NETWORK.send(
                                 PacketDistributor.PLAYER.with(() -> sp),
@@ -177,10 +180,20 @@ if (isClearAll || "pets".equals(msg.type)) {
 
     /**
      * Check rank-based permissions for equipping a cosmetic.
+     * Returns a simple boolean for backward compatibility.
      */
     private static boolean checkPermissionForEquip(ServerPlayer sp, String type, ResourceLocation id) {
+        return checkPermissionForEquipWithReason(sp, type, id).allowed();
+    }
+    
+    /**
+     * Check rank-based permissions for equipping a cosmetic with reason code.
+     * Centralized permission check that returns result with reason.
+     */
+    private static com.pastlands.cosmeticslite.permission.CosmeticsPermissions.PermissionResult 
+            checkPermissionForEquipWithReason(ServerPlayer sp, String type, ResourceLocation id) {
         if (sp == null || type == null || id == null) {
-            return false;
+            return com.pastlands.cosmeticslite.permission.CosmeticsPermissions.PermissionResult.deny("null_params");
         }
 
         // Get the cosmetic definition
@@ -189,29 +202,38 @@ if (isClearAll || "pets".equals(msg.type)) {
             // Unknown cosmetic: deny by default (security hardening)
             // Only allow OPs to use unknown cosmetics (for dev/testing)
             if (sp.hasPermissions(2)) {
-                return true;
+                return com.pastlands.cosmeticslite.permission.CosmeticsPermissions.PermissionResult.allow();
             }
             // Deny unknown cosmetics for normal players
-            return false;
+            return com.pastlands.cosmeticslite.permission.CosmeticsPermissions.PermissionResult.deny("unknown_cosmetic");
         }
 
         // Check permissions based on type
         switch (type) {
             case CosmeticsRegistry.TYPE_HATS:
-                return CosmeticsPermissions.canUseHat(sp, def);
+                boolean hatAllowed = CosmeticsPermissions.canUseHat(sp, def);
+                return hatAllowed 
+                    ? com.pastlands.cosmeticslite.permission.CosmeticsPermissions.PermissionResult.allow()
+                    : com.pastlands.cosmeticslite.permission.CosmeticsPermissions.PermissionResult.deny("hat_permission");
 
             case CosmeticsRegistry.TYPE_PARTICLES:
-                return CosmeticsPermissions.canUseParticle(sp, def);
+                return CosmeticsPermissions.checkParticlePermission(sp, def);
 
             case CosmeticsRegistry.TYPE_CAPES:
-                return CosmeticsPermissions.canUseFeature(sp, CosmeticsFeature.CAPES);
+                boolean capeAllowed = CosmeticsPermissions.canUseFeature(sp, CosmeticsFeature.CAPES);
+                return capeAllowed
+                    ? com.pastlands.cosmeticslite.permission.CosmeticsPermissions.PermissionResult.allow()
+                    : com.pastlands.cosmeticslite.permission.CosmeticsPermissions.PermissionResult.deny("cape_permission");
 
             case CosmeticsRegistry.TYPE_PETS:
-                return CosmeticsPermissions.canUseFeature(sp, CosmeticsFeature.PETS);
+                boolean petAllowed = CosmeticsPermissions.canUseFeature(sp, CosmeticsFeature.PETS);
+                return petAllowed
+                    ? com.pastlands.cosmeticslite.permission.CosmeticsPermissions.PermissionResult.allow()
+                    : com.pastlands.cosmeticslite.permission.CosmeticsPermissions.PermissionResult.deny("pet_permission");
 
             default:
                 // Unknown type (not permission-gated, but should be rare)
-                return true;
+                return com.pastlands.cosmeticslite.permission.CosmeticsPermissions.PermissionResult.allow();
         }
     }
 

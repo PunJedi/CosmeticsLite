@@ -1037,8 +1037,10 @@ public final class ClientCosmeticRenderer {
         // 3. Angle: use existing logic (orbit angle based on time and index)
         // Similar to halo: base angle rotates over time, plus per-particle offset
         // Use tickCount equivalent: timeSeconds * 20.0
-        double baseAngle = ((timeSeconds * 20.0) * 0.15) % (Math.PI * 2.0);
-        double angle = baseAngle + (Math.PI * 2.0 * index / Math.max(1, world.count()));
+        // Apply rotation direction: +1 = clockwise (positive angle), -1 = counterclockwise (negative angle)
+        int rotationDir = world.rotationDirection();
+        double baseAngle = ((timeSeconds * 20.0) * 0.15 * rotationDir) % (Math.PI * 2.0);
+        double angle = baseAngle + (Math.PI * 2.0 * index * rotationDir / Math.max(1, world.count()));
         
         // 4. Start with base horizontal circle in XZ
         double px = Math.cos(angle) * effectiveRadius;
@@ -1570,11 +1572,13 @@ public final class ClientCosmeticRenderer {
         double timeOffset = timeSeconds * 20.0 * 0.05;
         double radius = world.radius();
         
+        // Apply rotation direction
+        int rotationDir = world.rotationDirection();
         for (int i = 0; i < count; i++) {
             double t = (double) i / count;
             double spreadFactor = Mth.lerp(t, world.spreadStart(), world.spreadEnd());
             double effectiveRadius = radius * spreadFactor;
-            double angle = t * turns * 2.0 * Math.PI + timeOffset;
+            double angle = t * turns * 2.0 * Math.PI * rotationDir + timeOffset;
             double y = baseY + t * height;
             
             // Apply rotation mode to spiral as well
