@@ -2365,13 +2365,20 @@ public class ParticleLabScreen extends Screen {
     private void updateWorldLayerEffect(int layerIndex, String newEffect) {
         if (editorState.workingCopy == null) return;
         try {
-            // Handle display format: if it's just a path (no colon), assume minecraft namespace
-            ResourceLocation effect;
-            if (!newEffect.contains(":")) {
-                effect = ResourceLocation.fromNamespaceAndPath("minecraft", newEffect);
-            } else {
-                effect = ResourceLocation.parse(newEffect);
+            // First try to resolve through the display-to-id mapping (this handles formatted display strings)
+            ResourceLocation effect = effectDisplayToId.get(newEffect);
+            
+            // If not found in map, fall back to parsing (supports cases where dropdown feeds raw IDs)
+            if (effect == null) {
+                if (newEffect.contains(":")) {
+                    effect = ResourceLocation.parse(newEffect);
+                } else {
+                    effect = ResourceLocation.fromNamespaceAndPath("minecraft", newEffect);
+                }
             }
+            
+            // Debug log to confirm correct resolution
+            CosmeticsLite.LOGGER.debug("[ParticleLab] Effect selection: display='{}' -> id={}", newEffect, effect);
             List<WorldLayerDefinition> newWorldLayers = new ArrayList<>(editorState.workingCopy.worldLayers());
             WorldLayerDefinition old = newWorldLayers.get(layerIndex);
             newWorldLayers.set(layerIndex, new WorldLayerDefinition(

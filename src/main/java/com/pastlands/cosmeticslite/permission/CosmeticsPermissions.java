@@ -1,7 +1,9 @@
 package com.pastlands.cosmeticslite.permission;
 
 import com.pastlands.cosmeticslite.CosmeticDef;
+import com.pastlands.cosmeticslite.CosmeticsLite;
 import com.pastlands.cosmeticslite.CosmeticsRegistry;
+import com.pastlands.cosmeticslite.PlayerData;
 import com.pastlands.cosmeticslite.particle.config.CosmeticParticleRegistry;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.level.ServerPlayer;
@@ -9,6 +11,7 @@ import net.minecraftforge.server.permission.PermissionAPI;
 import net.minecraftforge.server.permission.nodes.PermissionNode;
 
 import java.util.EnumSet;
+import java.util.Optional;
 import java.util.Set;
 
 public final class CosmeticsPermissions {
@@ -239,6 +242,152 @@ public final class CosmeticsPermissions {
         
         boolean allowed = canUseFeature(player, requiredFeature);
         return allowed ? PermissionResult.allow() : PermissionResult.deny("feature_" + requiredFeature.name());
+    }
+
+    /**
+     * Centralized permission check for any cosmetic type.
+     * This is the single source of truth for equip-time permission validation.
+     * Used by both equip requests and automatic validation/cleanup.
+     * 
+     * @param player The server player
+     * @param type The cosmetic type (particles, hats, capes, pets)
+     * @param id The cosmetic ResourceLocation ID
+     * @return PermissionResult with allowed status and reason code
+     */
+    public static PermissionResult checkCosmeticPermission(ServerPlayer player, String type, ResourceLocation id) {
+        if (player == null || type == null || id == null) {
+            return PermissionResult.deny("null_params");
+        }
+
+        // Check if it's AIR (clearing is always allowed)
+        if (isAir(id)) {
+            return PermissionResult.allow();
+        }
+
+        // Special handling for particles: they may not be in CosmeticsRegistry (custom Particle Lab definitions)
+        if (CosmeticsRegistry.TYPE_PARTICLES.equals(type)) {
+            // First try CosmeticsRegistry
+            CosmeticDef def = CosmeticsRegistry.get(id);
+            if (def != null) {
+                return checkParticlePermission(player, def);
+            }
+            
+            // Not in CosmeticsRegistry - check if it's a particle cosmetic ID or particle definition ID
+            // For custom Particle Lab particles, check based on whether it's blended/lab or base
+            boolean isLabParticle = CosmeticParticleRegistry.isLabParticle(id);
+            // Check if it's a cosmetic ID that maps to a particle (cosmeticslite:cosmetic/...)
+            boolean isCosmeticId = "cosmeticslite".equals(id.getNamespace()) && id.getPath().startsWith("cosmetic/");
+            // Check if it's a particle definition ID (cosmeticslite:particle/...)
+            boolean isParticleDefId = "cosmeticslite".equals(id.getNamespace()) && id.getPath().startsWith("particle/");
+            
+            if (isLabParticle || isCosmeticId || isParticleDefId) {
+                // Custom/lab particles require BLENDED_PARTICLES permission
+                boolean allowed = canUseFeature(player, CosmeticsFeature.BLENDED_PARTICLES);
+                return allowed ? PermissionResult.allow() : PermissionResult.deny("feature_BLENDED_PARTICLES");
+            }
+            
+            // Unknown particle: deny by default (security hardening)
+            // Only allow OPs to use unknown particles (for dev/testing)
+            if (player.hasPermissions(2)) {
+                return PermissionResult.allow();
+            }
+            return PermissionResult.deny("unknown_particle");
+        }
+
+        // Get the cosmetic definition for other types
+        CosmeticDef def = CosmeticsRegistry.get(id);
+        if (def == null) {
+            // Unknown cosmetic: deny by default (security hardening)
+            // Only allow OPs to use unknown cosmetics (for dev/testing)
+            if (player.hasPermissions(2)) {
+                return PermissionResult.allow();
+            }
+            // Deny unknown cosmetics for normal players
+            return PermissionResult.deny("unknown_cosmetic");
+        }
+
+        // Check permissions based on type
+        switch (type) {
+            case CosmeticsRegistry.TYPE_HATS:
+                boolean hatAllowed = canUseHat(player, def);
+                return hatAllowed 
+                    ? PermissionResult.allow()
+                    : PermissionResult.deny("hat_permission");
+
+            case CosmeticsRegistry.TYPE_CAPES:
+                boolean capeAllowed = canUseFeature(player, CosmeticsFeature.CAPES);
+                return capeAllowed
+                    ? PermissionResult.allow()
+                    : PermissionResult.deny("cape_permission");
+
+            case CosmeticsRegistry.TYPE_PETS:
+                boolean petAllowed = canUseFeature(player, CosmeticsFeature.PETS);
+                return petAllowed
+                    ? PermissionResult.allow()
+                    : PermissionResult.deny("pet_permission");
+
+            default:
+                // Unknown type (not permission-gated, but should be rare)
+                return PermissionResult.allow();
+        }
+    }
+    
+    /**
+     * Enforce validity of all equipped cosmetics for a player.
+     * Automatically clears any equipped cosmetics that the player no longer has permission for.
+     * This prevents "stuck equipped" cosmetics when permissions are downgraded.
+     * 
+     * @param player The server player to validate
+     * @return true if any changes were made (cosmetics were cleared)
+     */
+    public static boolean enforceEquippedValidity(ServerPlayer player) {
+        if (player == null) {
+            return false;
+        }
+        
+        Optional<PlayerData> dataOpt = PlayerData.get(player);
+        if (dataOpt.isEmpty()) {
+            return false;
+        }
+        
+        PlayerData data = dataOpt.get();
+        boolean changed = false;
+        
+        // Check each equipped cosmetic type
+        String[] types = {
+            PlayerData.TYPE_PARTICLES,
+            PlayerData.TYPE_HATS,
+            PlayerData.TYPE_CAPES,
+            PlayerData.TYPE_PETS
+        };
+        
+        for (String type : types) {
+            ResourceLocation equippedId = data.getEquippedId(type);
+            
+            // Skip if nothing equipped or is AIR
+            if (equippedId == null || isAir(equippedId)) {
+                continue;
+            }
+            
+            // Check if player still has permission for this cosmetic
+            PermissionResult result = checkCosmeticPermission(player, type, equippedId);
+            if (!result.allowed()) {
+                // Player no longer has permission - clear it
+                CosmeticsLite.LOGGER.info("[CosmeticsLite] Auto-clearing {} cosmetic {} for {} (reason: {})",
+                    type, equippedId, player.getGameProfile().getName(), result.reasonCode());
+                data.setEquippedId(type, null);
+                changed = true;
+            }
+        }
+        
+        return changed;
+    }
+    
+    /**
+     * Helper to check if a ResourceLocation represents AIR (unset).
+     */
+    private static boolean isAir(ResourceLocation id) {
+        return id != null && ("minecraft".equals(id.getNamespace()) && "air".equals(id.getPath()));
     }
 
     // ---------------------------------------------------

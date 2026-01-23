@@ -312,7 +312,22 @@ public CosmeticsLite() {
             CosmeticsSync.sync(sp);
             CosmeticCommand.sendAccessSync(sp);
             sendEntitlements(sp); // NEW: push entitlements on login
-            sp.level().getServer().execute(() -> PetManager.updatePlayerPet(sp));
+            
+            // Enforce equipped cosmetics validity - auto-unequip anything player no longer has permission for
+            boolean cosmeticsChanged = com.pastlands.cosmeticslite.permission.CosmeticsPermissions.enforceEquippedValidity(sp);
+            if (cosmeticsChanged) {
+                // Re-sync if any cosmetics were cleared
+                CosmeticsSync.sync(sp);
+                // Refresh pets if pets were affected
+                sp.level().getServer().execute(() -> {
+                    com.pastlands.cosmeticslite.entity.PetManager.clearSpawnDebounce(sp);
+                    com.pastlands.cosmeticslite.entity.PetManager.updatePlayerPet(sp);
+                });
+            } else {
+                // Normal pet update if no changes
+                sp.level().getServer().execute(() -> PetManager.updatePlayerPet(sp));
+            }
+            
             // Sync particle definitions on login
             sendParticleDefinitions(sp);
             // Sync cosmetic particle catalog on login
